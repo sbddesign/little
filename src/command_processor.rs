@@ -12,8 +12,10 @@ impl CommandProcessor {
     }
 
     pub async fn process_command(&mut self, command: Value) -> Value {
-        // Process the command and return the result
-        // This method will be called by both CLI and REST handlers
-        todo!()
+        serde_json::json!({
+            "status": "success",
+            "message": "Command received",
+            "received_command": command
+        })
     }
 }

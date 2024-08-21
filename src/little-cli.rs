@@ -28,4 +28,5 @@ async fn main() {
     // Implement the communication protocol here
 
     // Print the response
+    println!("Response: {:?}", command);
 }
