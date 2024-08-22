@@ -1,5 +1,10 @@
 use clap::{Parser, Subcommand};
-use tokio::net::UnixStream;
+use little::little_service_client::LittleServiceClient;
+use little::CommandRequest;
+
+pub mod little {
+    tonic::include_proto!("little");
+}
 
 #[derive(Parser)]
 #[command(author, version, about, long_about = None)]
@@ -10,43 +15,39 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    // Define your subcommands here
     Start {
         #[arg(short, long)]
         name: Option<String>,
     },
     Stop,
-    // Add more subcommands as needed
 }
 
 #[tokio::main]
-async fn main() {
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
 
-    let socket_path = "/tmp/little.sock";
-    let stream = match UnixStream::connect(socket_path).await {
-        Ok(stream) => stream,
-        Err(e) => {
-            eprintln!("Failed to connect to the server: {}", e);
-            std::process::exit(1);
-        }
-    };
+    let mut client = LittleServiceClient::connect("http://[::1]:50051").await?;
 
-    // Serialize the command to send to the server
-    let command = match &cli.command {
-        Commands::Start { name } => serde_json::json!({
-            "command": "start",
-            "arguments": { "name": name }
-        }),
-        Commands::Stop => serde_json::json!({
-            "command": "stop"
-        }),
-        // Handle other commands
-    };
+    let request = tonic::Request::new(CommandRequest {
+        command: match &cli.command {
+            Commands::Start { .. } => "start".to_string(),
+            Commands::Stop => "stop".to_string(),
+        },
+        arguments: match &cli.command {
+            Commands::Start { name } => {
+                let mut args = std::collections::HashMap::new();
+                if let Some(n) = name {
+                    args.insert("name".to_string(), n.clone());
+                }
+                args
+            }
+            Commands::Stop => std::collections::HashMap::new(),
+        },
+    });
 
-    // Send the command and receive the response
-    // Implement the communication protocol here
+    let response = client.execute_command(request).await?;
 
-    // Print the response
-    println!("Response: {:?}", command);
+    println!("RESPONSE={:?}", response);
+
+    Ok(())
 }
