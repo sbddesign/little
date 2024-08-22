@@ -1,19 +1,30 @@
-use std::sync::Arc;
-use tokio::net::UnixListener;
-use tokio::sync::Mutex;
-use warp::Filter;
+use clap::{Parser, Subcommand};
 use std::fs;
+use tokio::net::UnixListener;
+use warp::Filter;
 
-mod command_processor;
-use command_processor::CommandProcessor;
+#[derive(Parser)]
+#[command(author, version, about, long_about = None)]
+struct Cli {
+    #[command(subcommand)]
+    command: Commands,
+}
+
+#[derive(Subcommand)]
+enum Commands {
+    // Define your subcommands here
+    Start {
+        #[arg(short, long)]
+        name: Option<String>,
+    },
+    Stop,
+    // Add more subcommands as needed
+}
 
 #[tokio::main]
 async fn main() {
-    let processor = Arc::new(Mutex::new(CommandProcessor::new()));
-
     // Start the Unix socket listener for CLI
     let socket_path = "/tmp/little.sock";
-    let socket_processor = processor.clone();
     tokio::spawn(async move {
         // Remove the old socket file if it exists
         if fs::metadata(socket_path).is_ok() {
@@ -32,9 +43,8 @@ async fn main() {
         loop {
             match listener.accept().await {
                 Ok((stream, _)) => {
-                    let proc = socket_processor.clone();
                     tokio::spawn(async move {
-                        handle_cli_connection(stream, proc).await;
+                        handle_cli_connection(stream).await;
                     });
                 }
                 Err(e) => {
@@ -53,29 +63,31 @@ async fn main() {
     let command_route = api
         .and(warp::post())
         .and(warp::body::json())
-        .and(with_processor(processor.clone()))
         .and_then(handle_command);
 
     // Start the HTTP server
-    warp::serve(command_route)
-        .run(([127, 0, 0, 1], 3030))
-        .await;
+    println!("Server is running on http://127.0.0.1:3030");
+    warp::serve(command_route).run(([127, 0, 0, 1], 3030)).await;
 }
 
-fn with_processor(
-    processor: Arc<Mutex<CommandProcessor>>,
-) -> impl Filter<Extract = (Arc<Mutex<CommandProcessor>>,), Error = std::convert::Infallible> + Clone {
-    warp::any().map(move || processor.clone())
-}
-
-async fn handle_command(
-    command: serde_json::Value,
-    processor: Arc<Mutex<CommandProcessor>>,
-) -> Result<impl warp::Reply, warp::Rejection> {
-    let result = processor.lock().await.process_command(command).await;
+async fn handle_command(command: serde_json::Value) -> Result<impl warp::Reply, warp::Rejection> {
+    println!("Received command: {:?}", command);
+    let result = serde_json::json!({"status": "received", "command": command});
     Ok(warp::reply::json(&result))
 }
 
-async fn handle_cli_connection(stream: tokio::net::UnixStream, processor: Arc<Mutex<CommandProcessor>>) {
-    // Implement CLI command handling here
+async fn handle_cli_connection(mut stream: tokio::net::UnixStream) {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let mut buffer = [0; 1024];
+    match stream.read(&mut buffer).await {
+        Ok(n) => {
+            let received = String::from_utf8_lossy(&buffer[..n]);
+            println!("Received from CLI: {}", received);
+            let response = "Command received\n";
+            if let Err(e) = stream.write_all(response.as_bytes()).await {
+                eprintln!("Failed to write to stream: {}", e);
+            }
+        }
+        Err(e) => eprintln!("Failed to read from stream: {}", e),
+    }
 }

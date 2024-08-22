@@ -1,21 +1,3 @@
-[package]
-name = "little"
-version = "0.1.0"
-edition = "2021"
-
-[[bin]]
-name = "littled"
-path="src/littled.rs"
-
-[[bin]]
-name = "little-cli"
-path = "src/little-cli.rs"
-
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
-
-[dependencies]
-ldk-node = "0.3.0"
-serde = "1.0.208"
-serde_json = "1.0.125"
-tokio = "1.39.3"
-warp = "0.3.7"
+[workspace]
+members = ["littled", "little-cli"]
+resolver = "2"

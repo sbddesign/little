@@ -1,0 +1,19 @@
+[package]
+name = "littled"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "littled"
+path = "src/main.rs"
+
+[dependencies]
+tokio = { version = "1.39.3", features = ["full"] }
+warp = "0.3.7"
+serde = { version = "1.0.208", features = ["derive"] }
+serde_json = "1.0.125"
+ldk-node = "0.3.0"
+clap = { version = "4.4", features = ["derive"] }
+
+[dev-dependencies]
+tokio-test = "0.4.2"
