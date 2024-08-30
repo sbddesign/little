@@ -18,5 +18,5 @@ Run `curl -X POST -H "Content-Type: application/json" -d '{"command": "test", "s
 - [ ] Create `start` (and create node)
 - [ ] Create `stop`
 - [ ] Create `getinfo`
-- [ ] Create `makenode`
+- [ ] ~~Create `makenode`~~
 - [ ] Create `getaddress`
