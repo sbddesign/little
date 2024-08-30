@@ -7,13 +7,15 @@ use serde_json;
 use little::little_service_server::{LittleService, LittleServiceServer};
 use little::{CommandRequest, CommandResponse};
 mod commands;
-use commands::Command;
+use commands::{Command, GetInfoResponse};
 use ldk_node::Builder;
 use ldk_node::bitcoin::Network;
 use names::Generator;
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Write};
 use std::path::Path;
+use std::future::Future;
+use std::pin::Pin;
 
 pub mod little {
     tonic::include_proto!("little");
@@ -28,8 +30,9 @@ struct Cli {
 
 #[derive(Clone)]
 struct MyLittleService {
-    // Add any shared state here
     state: Arc<Mutex<String>>,
+    alias: String,
+    node_id: String,
 }
 
 #[tonic::async_trait]
@@ -44,7 +47,6 @@ impl LittleService for MyLittleService {
         let command: Command = serde_json::from_str(&req.command)
             .map_err(|e| Status::invalid_argument(format!("Invalid command: {}", e)))?;
 
-        // Here you would implement the actual command execution logic
         let response = match command {
             Command::Start { name } => CommandResponse {
                 status: "started".to_string(),
@@ -56,7 +58,10 @@ impl LittleService for MyLittleService {
             },
             Command::GetInfo => CommandResponse {
                 status: "info".to_string(),
-                message: "GetInfo not implemented yet".to_string(),
+                message: serde_json::to_string(&GetInfoResponse {
+                    alias: self.alias.clone(),
+                    public_key: self.node_id.clone(),
+                }).unwrap(),
             },
         };
 
@@ -66,13 +71,12 @@ impl LittleService for MyLittleService {
 
 async fn handle_http_command(
     command: serde_json::Value,
-    _service: MyLittleService,
+    service: MyLittleService,
 ) -> Result<impl warp::Reply, warp::Rejection> {
     println!("Received HTTP command: {:?}", command);
 
     let command_str = command["command"].as_str().unwrap_or("").to_lowercase();
-    
-    // Here you would implement the actual command execution logic
+
     let response = match command_str.as_str() {
         "start" => {
             let name = command["arguments"].get(0).and_then(|v| v.as_str()).unwrap_or("default");
@@ -87,7 +91,10 @@ async fn handle_http_command(
         }),
         "getinfo" => serde_json::json!({
             "status": "info",
-            "message": "GetInfo not implemented yet"
+            "message": {
+                "alias": service.alias,
+                "node_id": service.node_id,
+            }
         }),
         _ => return Err(warp::reject::custom(InvalidCommand(format!("Unknown command: {}", command_str))))
     };
@@ -102,12 +109,6 @@ impl warp::reject::Reject for InvalidCommand {}
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let service = MyLittleService {
-        state: Arc::new(Mutex::new(String::new())),
-    };
-    let service_clone = service.clone();
-
-    // Load or generate node alias
     let alias = match load_alias()? {
         Some(saved_alias) => saved_alias,
         None => {
@@ -118,17 +119,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     };
 
-    // Create lightning node with loaded or generated alias
-    let node = make_node(&alias, 9735);
+    let (node, node_id) = make_node(&alias, 9735);
 
-    // gRPC server
+    let service = MyLittleService {
+        state: Arc::new(Mutex::new(String::new())),
+        alias,
+        node_id,
+    };
+    let service_clone = service.clone();
+
     let grpc_addr = "[::1]:50051".parse()?;
     let grpc_service = LittleServiceServer::new(service);
     let grpc_server = Server::builder().add_service(grpc_service).serve(grpc_addr);
 
     println!("gRPC server listening on {}", grpc_addr);
 
-    // HTTP server
     let http_addr = ([127, 0, 0, 1], 3030);
     let http_routes = warp::post()
         .and(warp::path("little"))
@@ -143,13 +148,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     println!("HTTP server listening on http://{:?}", http_addr);
 
-    // Run both servers concurrently
-    tokio::join!(grpc_server, http_server);
+    tokio::join!(
+        Box::pin(grpc_server) as Pin<Box<dyn Future<Output = _> + Send>>,
+        Box::pin(http_server) as Pin<Box<dyn Future<Output = _> + Send>>,
+    );
 
     Ok(())
 }
 
-fn make_node(alias: &str, port: u16) -> ldk_node::Node {
+fn make_node(alias: &str, port: u16) -> (ldk_node::Node, String) {
     let mut builder = Builder::new();
     builder.set_network(Network::Signet);
     builder.set_esplora_server("https://mutinynet.ltbl.io/api".to_string());
@@ -158,12 +165,14 @@ fn make_node(alias: &str, port: u16) -> ldk_node::Node {
     builder.set_listening_addresses(vec![format!("127.0.0.1:{}", port).parse().unwrap()]);
 
     let node = builder.build().unwrap();
-
     node.start().unwrap();
 
-    println!("Node Public Key: {}", node.node_id());
+    let node_id = node.node_id().to_string();
 
-    return node;
+    println!("Node alias: {}", alias);
+    println!("Node public key: {}", node_id);
+
+    (node, node_id)
 }
 
 fn save_alias(alias: &str) -> std::io::Result<()> {
