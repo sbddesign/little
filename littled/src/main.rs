@@ -4,13 +4,12 @@ use tokio::sync::Mutex;
 use tonic::{transport::Server, Request, Response, Status};
 use warp::Filter;
 use serde_json;
-// use commands::Command;
-
 use little::little_service_server::{LittleService, LittleServiceServer};
 use little::{CommandRequest, CommandResponse};
-
 mod commands;
 use commands::Command;
+use ldk_node::Builder;
+use ldk_node::bitcoin::Network;
 
 pub mod little {
     tonic::include_proto!("little");
@@ -104,6 +103,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
     let service_clone = service.clone();
 
+    // Create lightning node
+    let node = make_node("littled", 9735);
+
     // gRPC server
     let grpc_addr = "[::1]:50051".parse()?;
     let grpc_service = LittleServiceServer::new(service);
@@ -130,4 +132,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     tokio::join!(grpc_server, http_server);
 
     Ok(())
+}
+
+fn make_node(alias: &str, port: u16) -> ldk_node::Node {
+    let mut builder = Builder::new();
+    builder.set_network(Network::Signet);
+    builder.set_esplora_server("https://mutinynet.ltbl.io/api".to_string());
+    builder.set_gossip_source_rgs("https://mutinynet.ltbl.io/snapshot".to_string());
+    builder.set_storage_dir_path(("./data/".to_owned() + alias).to_string());
+
+    builder.set_listening_addresses(vec![format!("127.0.0.1:{}", port).parse().unwrap()]);
+
+    let node = builder.build().unwrap();
+
+    node.start().unwrap();
+
+    println!("Node Public Key: {}", node.node_id());
+
+    return node;
 }
