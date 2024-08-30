@@ -6,6 +6,7 @@ Little is a little lightning node. The goal, beyond just being a personal learni
 
 Run `cargo build` for dev or `cargo build --release` for prod.
 
+
 Run the `littled` binary. This is the node.
 
 Run `little-cli {command}` to interact with the node through CLI.
