@@ -1141,6 +1141,7 @@ name = "little-cli"
 version = "0.1.0"
 dependencies = [
  "clap",
+ "littled",
  "prost 0.12.6",
  "serde",
  "serde_json",
