@@ -1,0 +1,16 @@
+syntax = "proto3";
+package little;
+
+service LittleService {
+  rpc ExecuteCommand (CommandRequest) returns (CommandResponse);
+}
+
+message CommandRequest {
+  string command = 1;
+  map<string, string> arguments = 2;
+}
+
+message CommandResponse {
+  string status = 1;
+  string message = 2;
+}
