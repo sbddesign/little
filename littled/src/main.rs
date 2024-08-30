@@ -10,6 +10,10 @@ mod commands;
 use commands::Command;
 use ldk_node::Builder;
 use ldk_node::bitcoin::Network;
+use names::Generator;
+use std::fs::{File, OpenOptions};
+use std::io::{Read, Write};
+use std::path::Path;
 
 pub mod little {
     tonic::include_proto!("little");
@@ -103,8 +107,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
     let service_clone = service.clone();
 
-    // Create lightning node
-    let node = make_node("littled", 9735);
+    // Load or generate node alias
+    let alias = match load_alias()? {
+        Some(saved_alias) => saved_alias,
+        None => {
+            let mut generator = Generator::default();
+            let new_alias = generator.next().unwrap();
+            save_alias(&new_alias)?;
+            new_alias
+        }
+    };
+
+    // Create lightning node with loaded or generated alias
+    let node = make_node(&alias, 9735);
 
     // gRPC server
     let grpc_addr = "[::1]:50051".parse()?;
@@ -139,8 +154,7 @@ fn make_node(alias: &str, port: u16) -> ldk_node::Node {
     builder.set_network(Network::Signet);
     builder.set_esplora_server("https://mutinynet.ltbl.io/api".to_string());
     builder.set_gossip_source_rgs("https://mutinynet.ltbl.io/snapshot".to_string());
-    builder.set_storage_dir_path(("./data/".to_owned() + alias).to_string());
-
+    builder.set_storage_dir_path("./data".to_string());
     builder.set_listening_addresses(vec![format!("127.0.0.1:{}", port).parse().unwrap()]);
 
     let node = builder.build().unwrap();
@@ -151,3 +165,26 @@ fn make_node(alias: &str, port: u16) -> ldk_node::Node {
 
     return node;
 }
+
+fn save_alias(alias: &str) -> std::io::Result<()> {
+    let path = Path::new("./data/node_alias.txt");
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create(true)
+        .open(path)?;
+    file.write_all(alias.as_bytes())?;
+    Ok(())
+}
+
+fn load_alias() -> std::io::Result<Option<String>> {
+    let path = Path::new("./data/node_alias.txt");
+    if path.exists() {
+        let mut file = File::open(path)?;
+        let mut contents = String::new();
+        file.read_to_string(&mut contents)?;
+        Ok(Some(contents))
+    } else {
+        Ok(None)
+    }
+}
+
