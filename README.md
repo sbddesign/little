@@ -15,6 +15,8 @@ Run `curl -X POST -H "Content-Type: application/json" -d '{"command": "test", "s
 
 ## Roadmap
 
+- [ ] Create `start` (and create node)
+- [ ] Create `stop`
 - [ ] Create `getinfo`
 - [ ] Create `makenode`
 - [ ] Create `getaddress`
