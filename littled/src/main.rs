@@ -35,6 +35,81 @@ struct MyLittleService {
     shutdown_signal: Arc<tokio::sync::broadcast::Sender<()>>,
 }
 
+impl MyLittleService {
+    async fn with_node<F, T>(&self, f: F) -> CommandResponse 
+    where
+        F: FnOnce(&ldk_node::Node) -> Result<T, Status>,
+        T: serde::Serialize,
+    {
+        let node_lock = self.node.lock().await;
+        if let Some(node) = node_lock.as_ref() {
+            match f(node) {
+                Ok(result) => CommandResponse {
+                    status: "success".to_string(),
+                    message: serde_json::to_string(&result).unwrap(),
+                },
+                Err(e) => CommandResponse {
+                    status: "error".to_string(),
+                    message: e.to_string(),
+                }
+            }
+        } else {
+            CommandResponse {
+                status: "error".to_string(),
+                message: "Node is not running".to_string(),
+            }
+        }
+    }
+
+    async fn execute_unified_command(&self, command: Command) -> Result<serde_json::Value, String> {
+        match command {
+            Command::Start { name } => Ok(serde_json::json!({
+                "name": name,
+            })),
+            Command::Stop => {
+                if let Some(node) = self.node.lock().await.take() {
+                    if let Err(e) = node.stop() {
+                        return Err(format!("Failed to stop node: {}", e));
+                    }
+                    let _ = self.shutdown_signal.send(());
+                    Ok(serde_json::json!({}))
+                } else {
+                    Err("Node is not running".to_string())
+                }
+            },
+            Command::GetInfo => Ok(serde_json::json!({
+                "alias": self.alias,
+                "node_id": self.node_id,
+            })),
+            Command::GetAddress => {
+                let node_lock = self.node.lock().await;
+                if let Some(node) = node_lock.as_ref() {
+                    node.onchain_payment().new_address()
+                        .map(|address| serde_json::json!({
+                            "address": address.to_string()
+                        }))
+                        .map_err(|e| format!("Failed to get address: {}", e))
+                } else {
+                    Err("Node is not running".to_string())
+                }
+            },
+            Command::ListBalances => {
+                let node_lock = self.node.lock().await;
+                if let Some(node) = node_lock.as_ref() {
+                    let balances = node.list_balances();
+                    Ok(serde_json::json!({
+                        "total_onchain_balance_sats": balances.total_onchain_balance_sats,
+                        "total_lightning_balance_sats": balances.total_lightning_balance_sats,
+                        "spendable_onchain_balance_sats": balances.spendable_onchain_balance_sats,
+                    }))
+                } else {
+                    Err("Node is not running".to_string())
+                }
+            },
+        }
+    }
+}
+
 #[tonic::async_trait]
 impl LittleService for MyLittleService {
     async fn execute_command(
@@ -48,75 +123,37 @@ impl LittleService for MyLittleService {
             .map_err(|e| Status::invalid_argument(format!("Invalid command: {}", e)))?;
 
         let response = match command {
-            Command::Start { name } => CommandResponse {
-                status: "started".to_string(),
-                message: format!("Started with name: {:?}", name),
-            },
-            Command::Stop => {
-                // Gracefully stop the LDK node
-                if let Some(node) = self.node.lock().await.take() {
-                    println!("Stopping LDK node...");
-                    // Spawn a blocking task to stop the node
-                    tokio::task::spawn_blocking(move || {
-                        if let Err(e) = node.stop() {
-                            eprintln!("Error stopping node: {}", e);
-                        }
-                    });
-                }
-                
-                // Signal shutdown to the servers
-                let _ = self.shutdown_signal.send(());
-                
-                CommandResponse {
-                    status: "stopped".to_string(),
-                    message: "Node shutdown initiated".to_string(),
-                }
-            },
-            Command::GetInfo => CommandResponse {
-                status: "info".to_string(),
-                message: serde_json::to_string(&GetInfoResponse {
-                    alias: self.alias.clone(),
-                    public_key: self.node_id.clone(),
-                }).unwrap(),
-            },
             Command::GetAddress => {
-                let node_lock = self.node.lock().await;
-                if let Some(node) = node_lock.as_ref() {
-                    let address = node.onchain_payment().new_address().map_err(|e| {
-                        Status::internal(format!("Failed to get address: {}", e))
-                    })?;
-                    CommandResponse {
-                        status: "success".to_string(),
-                        message: serde_json::to_string(&GetAddressResponse {
+                self.with_node(|node| {
+                    node.onchain_payment().new_address()
+                        .map(|address| GetAddressResponse {
                             address: address.to_string(),
-                        }).unwrap(),
-                    }
-                } else {
-                    CommandResponse {
-                        status: "error".to_string(),
-                        message: "Node is not running".to_string(),
-                    }
-                }
+                        })
+                        .map_err(|e| Status::internal(format!("Failed to get address: {}", e)))
+                }).await
             },
             Command::ListBalances => {
-                let node_lock = self.node.lock().await;
-                if let Some(node) = node_lock.as_ref() {
+                self.with_node(|node| {
                     let balances = node.list_balances();
-                    CommandResponse {
-                        status: "success".to_string(),
-                        message: serde_json::to_string(&ListBalancesResponse {
-                            total_onchain_balance_sats: balances.total_onchain_balance_sats,
-                            total_lightning_balance_sats: balances.total_lightning_balance_sats,
-                            spendable_onchain_balance_sats: balances.spendable_onchain_balance_sats,
-                        }).unwrap(),
-                    }
-                } else {
-                    CommandResponse {
-                        status: "error".to_string(),
-                        message: "Node is not running".to_string(),
-                    }
-                }
+                    Ok(ListBalancesResponse {
+                        total_onchain_balance_sats: balances.total_onchain_balance_sats,
+                        total_lightning_balance_sats: balances.total_lightning_balance_sats,
+                        spendable_onchain_balance_sats: balances.spendable_onchain_balance_sats,
+                    })
+                }).await
             },
+            _ => {
+                match self.execute_unified_command(command).await {
+                    Ok(result) => CommandResponse {
+                        status: "success".to_string(),
+                        message: serde_json::to_string(&result).unwrap(),
+                    },
+                    Err(e) => CommandResponse {
+                        status: "error".to_string(),
+                        message: e,
+                    },
+                }
+            }
         };
 
         Ok(Response::new(response))
@@ -130,84 +167,28 @@ async fn handle_http_command(
     println!("Received HTTP command: {:?}", command);
 
     let command_str = command["command"].as_str().unwrap_or("").to_lowercase();
-
-    let response = match command_str.as_str() {
+    let command = match command_str.as_str() {
         "start" => {
-            let name = command["arguments"].get(0).and_then(|v| v.as_str()).unwrap_or("default");
-            serde_json::json!({
-                "status": "started",
-                "message": format!("Started with name: {}", name)
-            })
+            let name = command["arguments"].get(0).and_then(|v| v.as_str()).map(|s| s.to_string());
+            Command::Start { name }
         },
-        "stop" => {
-            // Gracefully stop the LDK node
-            if let Some(node) = service.node.lock().await.take() {
-                println!("Stopping LDK node...");
-                // Spawn a blocking task to stop the node
-                tokio::task::spawn_blocking(move || {
-                    if let Err(e) = node.stop() {
-                        eprintln!("Error stopping node: {}", e);
-                    }
-                });
-            }
-            
-            // Signal shutdown to the servers
-            let _ = service.shutdown_signal.send(());
-            
-            serde_json::json!({
-                "status": "stopped",
-                "message": "Node shutdown initiated"
-            })
-        },
-        "getinfo" => serde_json::json!({
-            "status": "info",
-            "message": {
-                "alias": service.alias,
-                "node_id": service.node_id,
-            }
-        }),
-        "getaddress" => {
-            let node_lock = service.node.lock().await;
-            if let Some(node) = node_lock.as_ref() {
-                match node.onchain_payment().new_address() {
-                    Ok(address) => serde_json::json!({
-                        "status": "success",
-                        "message": {
-                            "address": address.to_string()
-                        }
-                    }),
-                    Err(e) => serde_json::json!({
-                        "status": "error",
-                        "message": format!("Failed to get address: {}", e)
-                    })
-                }
-            } else {
-                serde_json::json!({
-                    "status": "error",
-                    "message": "Node is not running"
-                })
-            }
-        },
-        "listbalances" => {
-            let node_lock = service.node.lock().await;
-            if let Some(node) = node_lock.as_ref() {
-                let balances = node.list_balances();
-                serde_json::json!({
-                    "status": "success",
-                    "message": {
-                        "total_onchain_balance_sats": balances.total_onchain_balance_sats,
-                        "total_lightning_balance_sats": balances.total_lightning_balance_sats,
-                        "spendable_onchain_balance_sats": balances.spendable_onchain_balance_sats,
-                    }
-                })
-            } else {
-                serde_json::json!({
-                    "status": "error",
-                    "message": "Node is not running"
-                })
-            }
-        },
+        "stop" => Command::Stop,
+        "getinfo" => Command::GetInfo,
+        "getaddress" => Command::GetAddress,
+        "listbalances" => Command::ListBalances,
         _ => return Err(warp::reject::custom(InvalidCommand(format!("Unknown command: {}", command_str))))
+    };
+
+    let result = service.execute_unified_command(command).await;
+    let response = match result {
+        Ok(message) => serde_json::json!({
+            "status": "success",
+            "message": message
+        }),
+        Err(e) => serde_json::json!({
+            "status": "error",
+            "message": e
+        }),
     };
 
     Ok(warp::reply::json(&response))
