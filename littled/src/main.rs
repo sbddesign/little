@@ -7,7 +7,7 @@ use serde_json;
 use little::little_service_server::{LittleService, LittleServiceServer};
 use little::{CommandRequest, CommandResponse};
 mod commands;
-use commands::{Command, GetInfoResponse, GetAddressResponse};
+use commands::{Command, GetInfoResponse, GetAddressResponse, ListBalancesResponse};
 use ldk_node::Builder;
 use ldk_node::bitcoin::Network;
 use names::Generator;
@@ -98,6 +98,25 @@ impl LittleService for MyLittleService {
                     }
                 }
             },
+            Command::ListBalances => {
+                let node_lock = self.node.lock().await;
+                if let Some(node) = node_lock.as_ref() {
+                    let balances = node.list_balances();
+                    CommandResponse {
+                        status: "success".to_string(),
+                        message: serde_json::to_string(&ListBalancesResponse {
+                            total_onchain_balance_sats: balances.total_onchain_balance_sats,
+                            total_lightning_balance_sats: balances.total_lightning_balance_sats,
+                            spendable_onchain_balance_sats: balances.spendable_onchain_balance_sats,
+                        }).unwrap(),
+                    }
+                } else {
+                    CommandResponse {
+                        status: "error".to_string(),
+                        message: "Node is not running".to_string(),
+                    }
+                }
+            },
         };
 
         Ok(Response::new(response))
@@ -162,6 +181,25 @@ async fn handle_http_command(
                         "message": format!("Failed to get address: {}", e)
                     })
                 }
+            } else {
+                serde_json::json!({
+                    "status": "error",
+                    "message": "Node is not running"
+                })
+            }
+        },
+        "listbalances" => {
+            let node_lock = service.node.lock().await;
+            if let Some(node) = node_lock.as_ref() {
+                let balances = node.list_balances();
+                serde_json::json!({
+                    "status": "success",
+                    "message": {
+                        "total_onchain_balance_sats": balances.total_onchain_balance_sats,
+                        "total_lightning_balance_sats": balances.total_lightning_balance_sats,
+                        "spendable_onchain_balance_sats": balances.spendable_onchain_balance_sats,
+                    }
+                })
             } else {
                 serde_json::json!({
                     "status": "error",

@@ -8,6 +8,7 @@ pub enum Command {
     Stop,
     GetInfo,
     GetAddress,
+    ListBalances,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -19,5 +20,12 @@ pub struct GetInfoResponse {
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct GetAddressResponse {
     pub address: String,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct ListBalancesResponse {
+    pub total_onchain_balance_sats: u64,
+    pub total_lightning_balance_sats: u64,
+    pub spendable_onchain_balance_sats: u64,
 }
 
