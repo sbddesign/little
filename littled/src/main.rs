@@ -14,8 +14,6 @@ use names::Generator;
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Write};
 use std::path::Path;
-use std::future::Future;
-use std::pin::Pin;
 
 pub mod little {
     tonic::include_proto!("little");
@@ -217,7 +215,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 fn make_node(alias: &str, port: u16) -> (ldk_node::Node, String) {
     let mut builder = Builder::new();
     builder.set_network(Network::Signet);
-    builder.set_esplora_server("https://mutinynet.ltbl.io/api".to_string());
+    builder.set_chain_source_esplora("https://mutinynet.ltbl.io/api".to_string(), None);
     builder.set_gossip_source_rgs("https://mutinynet.ltbl.io/snapshot".to_string());
     builder.set_storage_dir_path("./data".to_string());
     builder.set_listening_addresses(vec![format!("127.0.0.1:{}", port).parse().unwrap()]);
