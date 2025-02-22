@@ -7,7 +7,7 @@ use serde_json;
 use little::little_service_server::{LittleService, LittleServiceServer};
 use little::{CommandRequest, CommandResponse};
 mod commands;
-use commands::{Command, GetInfoResponse};
+use commands::{Command, GetInfoResponse, GetAddressResponse};
 use ldk_node::Builder;
 use ldk_node::bitcoin::Network;
 use names::Generator;
@@ -79,6 +79,25 @@ impl LittleService for MyLittleService {
                     public_key: self.node_id.clone(),
                 }).unwrap(),
             },
+            Command::GetAddress => {
+                let node_lock = self.node.lock().await;
+                if let Some(node) = node_lock.as_ref() {
+                    let address = node.onchain_payment().new_address().map_err(|e| {
+                        Status::internal(format!("Failed to get address: {}", e))
+                    })?;
+                    CommandResponse {
+                        status: "success".to_string(),
+                        message: serde_json::to_string(&GetAddressResponse {
+                            address: address.to_string(),
+                        }).unwrap(),
+                    }
+                } else {
+                    CommandResponse {
+                        status: "error".to_string(),
+                        message: "Node is not running".to_string(),
+                    }
+                }
+            },
         };
 
         Ok(Response::new(response))
@@ -128,6 +147,28 @@ async fn handle_http_command(
                 "node_id": service.node_id,
             }
         }),
+        "getaddress" => {
+            let node_lock = service.node.lock().await;
+            if let Some(node) = node_lock.as_ref() {
+                match node.onchain_payment().new_address() {
+                    Ok(address) => serde_json::json!({
+                        "status": "success",
+                        "message": {
+                            "address": address.to_string()
+                        }
+                    }),
+                    Err(e) => serde_json::json!({
+                        "status": "error",
+                        "message": format!("Failed to get address: {}", e)
+                    })
+                }
+            } else {
+                serde_json::json!({
+                    "status": "error",
+                    "message": "Node is not running"
+                })
+            }
+        },
         _ => return Err(warp::reject::custom(InvalidCommand(format!("Unknown command: {}", command_str))))
     };
 

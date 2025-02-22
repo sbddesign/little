@@ -13,4 +13,6 @@ message CommandRequest {
 message CommandResponse {
   string status = 1;
   string message = 2;
+  // Can contain either a simple message or a JSON-encoded response
+  // For GetAddress, this will contain the bitcoin address
 }
