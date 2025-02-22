@@ -20,6 +20,7 @@ clap = { version = "4.4", features = ["derive"] }
 tonic = "0.10"
 prost = "0.12"
 warp = "0.3"
+names = "0.14.0"
 
 [build-dependencies]
 tonic-build = "0.10"
