@@ -33,6 +33,8 @@ struct MyLittleService {
     state: Arc<Mutex<String>>,
     alias: String,
     node_id: String,
+    node: Arc<Mutex<Option<ldk_node::Node>>>,
+    shutdown_signal: Arc<tokio::sync::broadcast::Sender<()>>,
 }
 
 #[tonic::async_trait]
@@ -52,9 +54,25 @@ impl LittleService for MyLittleService {
                 status: "started".to_string(),
                 message: format!("Started with name: {:?}", name),
             },
-            Command::Stop => CommandResponse {
-                status: "stopped".to_string(),
-                message: "Stopped".to_string(),
+            Command::Stop => {
+                // Gracefully stop the LDK node
+                if let Some(node) = self.node.lock().await.take() {
+                    println!("Stopping LDK node...");
+                    // Spawn a blocking task to stop the node
+                    tokio::task::spawn_blocking(move || {
+                        if let Err(e) = node.stop() {
+                            eprintln!("Error stopping node: {}", e);
+                        }
+                    });
+                }
+                
+                // Signal shutdown to the servers
+                let _ = self.shutdown_signal.send(());
+                
+                CommandResponse {
+                    status: "stopped".to_string(),
+                    message: "Node shutdown initiated".to_string(),
+                }
             },
             Command::GetInfo => CommandResponse {
                 status: "info".to_string(),
@@ -85,10 +103,26 @@ async fn handle_http_command(
                 "message": format!("Started with name: {}", name)
             })
         },
-        "stop" => serde_json::json!({
-            "status": "stopped",
-            "message": "Stopped"
-        }),
+        "stop" => {
+            // Gracefully stop the LDK node
+            if let Some(node) = service.node.lock().await.take() {
+                println!("Stopping LDK node...");
+                // Spawn a blocking task to stop the node
+                tokio::task::spawn_blocking(move || {
+                    if let Err(e) = node.stop() {
+                        eprintln!("Error stopping node: {}", e);
+                    }
+                });
+            }
+            
+            // Signal shutdown to the servers
+            let _ = service.shutdown_signal.send(());
+            
+            serde_json::json!({
+                "status": "stopped",
+                "message": "Node shutdown initiated"
+            })
+        },
         "getinfo" => serde_json::json!({
             "status": "info",
             "message": {
@@ -120,39 +154,63 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     let (node, node_id) = make_node(&alias, 9735);
+    let (shutdown_tx, _) = tokio::sync::broadcast::channel(1);
 
     let service = MyLittleService {
         state: Arc::new(Mutex::new(String::new())),
         alias,
         node_id,
+        node: Arc::new(Mutex::new(Some(node))),
+        shutdown_signal: Arc::new(shutdown_tx),
     };
-    let service_clone = service.clone();
-
+    
     let grpc_addr = "[::1]:50051".parse()?;
-    let grpc_service = LittleServiceServer::new(service);
-    let grpc_server = Server::builder().add_service(grpc_service).serve(grpc_addr);
+    let grpc_service = LittleServiceServer::new(service.clone());
+    
+    // Create a new receiver for gRPC server
+    let mut grpc_shutdown_rx = service.shutdown_signal.subscribe();
+    let grpc_server = Server::builder().add_service(grpc_service).serve_with_shutdown(
+        grpc_addr,
+        async move {
+            grpc_shutdown_rx.recv().await.ok();
+            println!("Shutting down gRPC server...");
+        },
+    );
 
     println!("gRPC server listening on {}", grpc_addr);
 
     let http_addr = ([127, 0, 0, 1], 3030);
+    
+    // Create a new clone for the HTTP routes
+    let http_service = service.clone();
     let http_routes = warp::post()
         .and(warp::path("little"))
         .and(warp::path("api"))
         .and(warp::path("v1"))
         .and(warp::path("command"))
         .and(warp::body::json())
-        .and(warp::any().map(move || service_clone.clone()))
+        .and(warp::any().map(move || http_service.clone()))
         .and_then(handle_http_command);
 
-    let http_server = warp::serve(http_routes).run(http_addr);
+    // Create a new receiver for HTTP server
+    let mut http_shutdown_rx = service.shutdown_signal.subscribe();
+    let (_, http_server) = warp::serve(http_routes)
+        .bind_with_graceful_shutdown(
+            http_addr,
+            async move {
+                http_shutdown_rx.recv().await.ok();
+                println!("Shutting down HTTP server...");
+            },
+        );
 
     println!("HTTP server listening on http://{:?}", http_addr);
 
     tokio::join!(
-        Box::pin(grpc_server) as Pin<Box<dyn Future<Output = _> + Send>>,
-        Box::pin(http_server) as Pin<Box<dyn Future<Output = _> + Send>>,
+        grpc_server,
+        http_server,
     );
 
+    println!("Servers shut down successfully");
     Ok(())
 }
 

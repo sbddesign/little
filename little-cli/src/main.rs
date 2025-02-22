@@ -4,7 +4,6 @@ use little::CommandRequest;
 use std::process::Command as ProcessCommand;
 use tokio::time::sleep;
 use std::time::Duration;
-use tonic::transport::Error as TonicError;
 use std::error::Error;
 use std::fmt;
 
