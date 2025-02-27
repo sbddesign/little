@@ -7,7 +7,7 @@ use serde_json;
 use little::little_service_server::{LittleService, LittleServiceServer};
 use little::{CommandRequest, CommandResponse};
 mod commands;
-use commands::{Command, GetInfoResponse, GetAddressResponse, ListBalancesResponse};
+use commands::{Command, GetInfoResponse, GetAddressResponse, ListBalancesResponse, GetOfferResponse};
 use ldk_node::Builder;
 use ldk_node::bitcoin::Network;
 use names::Generator;
@@ -106,6 +106,38 @@ impl MyLittleService {
                     Err("Node is not running".to_string())
                 }
             },
+            Command::GetOffer { amount_sats, description } => {
+                let node_lock = self.node.lock().await;
+                if let Some(node) = node_lock.as_ref() {
+                    let desc = description.unwrap_or_else(|| "Payment request via Little".to_string());
+                    println!("Creating offer with description: {}", desc);  // Debug log
+                    let result = match amount_sats {
+                        Some(sats) => {
+                            println!("Fixed amount offer: {} sats", sats);  // Debug log
+                            node.bolt12_payment().receive(
+                                sats * 1000,     // convert sats to msats
+                                &desc,           // description
+                                Some(3600),      // expiry_secs (1 hour)
+                                None,            // quantity
+                            )
+                        },
+                        None => {
+                            println!("Variable amount offer");  // Debug log
+                            node.bolt12_payment().receive_variable_amount(
+                                &desc,           // description
+                                Some(3600),      // expiry_secs (1 hour)
+                            )
+                        },
+                    };
+                    
+                    result.map(|offer| serde_json::json!({
+                        "offer_string": offer.to_string()
+                    }))
+                    .map_err(|e| format!("Failed to create offer: {}", e))
+                } else {
+                    Err("Node is not running".to_string())
+                }
+            },
         }
     }
 }
@@ -176,6 +208,14 @@ async fn handle_http_command(
         "getinfo" => Command::GetInfo,
         "getaddress" => Command::GetAddress,
         "listbalances" => Command::ListBalances,
+        "getoffer" => {
+            let amount_sats = command["arguments"].get("amount_sats")
+                .and_then(|v| v.as_u64());
+            let description = command["arguments"].get("description")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string());
+            Command::GetOffer { amount_sats, description }
+        },
         _ => return Err(warp::reject::custom(InvalidCommand(format!("Unknown command: {}", command_str))))
     };
 
@@ -278,15 +318,19 @@ fn make_node(alias: &str, port: u16) -> (ldk_node::Node, String) {
     builder.set_chain_source_esplora("https://mutinynet.ltbl.io/api".to_string(), None);
     builder.set_gossip_source_rgs("https://mutinynet.ltbl.io/snapshot".to_string());
     builder.set_storage_dir_path("./data".to_string());
-    builder.set_listening_addresses(vec![format!("127.0.0.1:{}", port).parse().unwrap()]);
+    builder.set_listening_addresses(vec![format!("0.0.0.0:{}", port).parse().unwrap()]);
 
     let node = builder.build().unwrap();
     node.start().unwrap();
 
-    let node_id = node.node_id().to_string();
+    // Wait a moment for the node to initialize
+    std::thread::sleep(std::time::Duration::from_secs(1));
 
-    println!("Node alias: {}", alias);
-    println!("Node public key: {}", node_id);
+    let node_id = node.node_id().to_string();
+    println!("Node started successfully:");
+    println!("  Alias: {}", alias);
+    println!("  Node ID: {}", node_id);
+    println!("  Listening on port: {}", port);
 
     (node, node_id)
 }
