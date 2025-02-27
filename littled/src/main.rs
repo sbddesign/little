@@ -7,9 +7,12 @@ use serde_json;
 use little::little_service_server::{LittleService, LittleServiceServer};
 use little::{CommandRequest, CommandResponse};
 mod commands;
-use commands::{Command, GetInfoResponse, GetAddressResponse, ListBalancesResponse, GetOfferResponse};
+use commands::{Command, GetInfoResponse, GetAddressResponse, ListBalancesResponse, GetOfferResponse, PeerString, PeerDetailsResponse};
 use ldk_node::Builder;
 use ldk_node::bitcoin::Network;
+use ldk_node::bitcoin::secp256k1::PublicKey;
+use ldk_node::lightning::ln::msgs::SocketAddress;
+use std::str::FromStr;
 use names::Generator;
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Write};
@@ -138,6 +141,43 @@ impl MyLittleService {
                     Err("Node is not running".to_string())
                 }
             },
+            Command::Connect { peer } => {
+                let node_lock = self.node.lock().await;
+                if let Some(node) = node_lock.as_ref() {
+                    let node_id = PublicKey::from_str(&peer.node_id)
+                        .map_err(|e| format!("Invalid node ID: {}", e))?;
+                    let address = SocketAddress::from_str(&peer.address)
+                        .map_err(|e| format!("Invalid address: {}", e))?;
+                    
+                    node.connect(node_id, address, true)
+                        .map(|_| serde_json::json!({
+                            "node_id": peer.node_id,
+                            "address": peer.address,
+                        }))
+                        .map_err(|e| format!("Failed to connect to peer: {}", e))
+                } else {
+                    Err("Node is not running".to_string())
+                }
+            },
+            Command::ListPeers => {
+                let node_lock = self.node.lock().await;
+                if let Some(node) = node_lock.as_ref() {
+                    let peers = node.list_peers();
+                    let peer_details: Vec<PeerDetailsResponse> = peers.into_iter()
+                        .map(|peer| PeerDetailsResponse {
+                            node_id: peer.node_id.to_string(),
+                            address: peer.address.to_string(),
+                            is_persisted: peer.is_persisted,
+                        })
+                        .collect();
+                    
+                    Ok(serde_json::json!({
+                        "peers": peer_details
+                    }))
+                } else {
+                    Err("Node is not running".to_string())
+                }
+            },
         }
     }
 }
@@ -216,6 +256,15 @@ async fn handle_http_command(
                 .map(|s| s.to_string());
             Command::GetOffer { amount_sats, description }
         },
+        "connect" => {
+            let peer_str = command["arguments"].get("peer")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| warp::reject::custom(InvalidCommand("Missing peer parameter".to_string())))?;
+            let peer = commands::parse_peer_string(peer_str)
+                .map_err(|e| warp::reject::custom(InvalidCommand(e)))?;
+            Command::Connect { peer }
+        },
+        "listpeers" => Command::ListPeers,
         _ => return Err(warp::reject::custom(InvalidCommand(format!("Unknown command: {}", command_str))))
     };
 
