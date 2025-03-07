@@ -27,6 +27,8 @@ pub enum Command {
     ListPeers,
     /// List all created offers
     ListOffers,
+    /// List all channels
+    ListChannels,
     /// Open a channel with a peer
     OpenChannel {
         /// The node ID of the peer to open a channel with
@@ -92,6 +94,24 @@ pub struct StoredOfferDetails {
     pub amount_sats: Option<u64>,
     pub description: String,
     pub created_at: u64,  // Unix timestamp
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct ChannelDetailsResponse {
+    pub channel_id: String,
+    pub counterparty_node_id: String,
+    pub funding_txo: Option<String>,
+    pub channel_value_sats: u64,
+    pub unspendable_punishment_reserve: Option<u64>,
+    pub user_channel_id: String,
+    pub outbound_capacity_msat: u64,
+    pub inbound_capacity_msat: u64,
+    pub confirmations_required: Option<u32>,
+    pub confirmations: Option<u32>,
+    pub is_outbound: bool,
+    pub is_channel_ready: bool,
+    pub is_usable: bool,
+    pub cltv_expiry_delta: Option<u16>,
 }
 
 pub fn parse_peer_string(s: &str) -> Result<PeerString, String> {

@@ -7,7 +7,7 @@ use serde_json;
 use little::little_service_server::{LittleService, LittleServiceServer};
 use little::{CommandRequest, CommandResponse};
 mod commands;
-use commands::{Command, GetInfoResponse, GetAddressResponse, ListBalancesResponse, GetOfferResponse, PeerString, PeerDetailsResponse, StoredOfferDetails};
+use commands::{Command, GetInfoResponse, GetAddressResponse, ListBalancesResponse, GetOfferResponse, PeerString, PeerDetailsResponse, StoredOfferDetails, ChannelDetailsResponse};
 use ldk_node::Builder;
 use ldk_node::bitcoin::Network;
 use ldk_node::bitcoin::secp256k1::PublicKey;
@@ -328,6 +328,36 @@ impl MyLittleService {
                     Err("Node is not running".to_string())
                 }
             },
+            Command::ListChannels => {
+                let node_lock = self.node.lock().await;
+                if let Some(node) = node_lock.as_ref() {
+                    let channels = node.list_channels();
+                    let channel_details: Vec<ChannelDetailsResponse> = channels.into_iter()
+                        .map(|channel| ChannelDetailsResponse {
+                            channel_id: channel.channel_id.to_string(),
+                            counterparty_node_id: channel.counterparty_node_id.to_string(),
+                            funding_txo: channel.funding_txo.map(|txo| format!("{}:{}", txo.txid, txo.vout)),
+                            channel_value_sats: channel.channel_value_sats,
+                            unspendable_punishment_reserve: channel.unspendable_punishment_reserve,
+                            user_channel_id: channel.user_channel_id.0.to_string(),
+                            outbound_capacity_msat: channel.outbound_capacity_msat,
+                            inbound_capacity_msat: channel.inbound_capacity_msat,
+                            confirmations_required: channel.confirmations_required,
+                            confirmations: channel.confirmations,
+                            is_outbound: channel.is_outbound,
+                            is_channel_ready: channel.is_channel_ready,
+                            is_usable: channel.is_usable,
+                            cltv_expiry_delta: channel.cltv_expiry_delta,
+                        })
+                        .collect();
+                    
+                    Ok(serde_json::json!({
+                        "channels": channel_details
+                    }))
+                } else {
+                    Err("Node is not running".to_string())
+                }
+            },
         }
     }
 }
@@ -448,6 +478,7 @@ async fn handle_http_command(
                     .unwrap_or(true),
             }
         },
+        "listchannels" => Command::ListChannels,
         _ => return Err(warp::reject::custom(InvalidCommand(format!("Unknown command: {}", command_str))))
     };
 
