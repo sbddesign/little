@@ -25,6 +25,8 @@ pub enum Command {
     },
     /// List all connected peers
     ListPeers,
+    /// List all created offers
+    ListOffers,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -61,6 +63,14 @@ pub struct PeerDetailsResponse {
     pub node_id: String,
     pub address: String,
     pub is_persisted: bool,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct StoredOfferDetails {
+    pub offer_string: String,
+    pub amount_sats: Option<u64>,
+    pub description: String,
+    pub created_at: u64,  // Unix timestamp
 }
 
 pub fn parse_peer_string(s: &str) -> Result<PeerString, String> {
