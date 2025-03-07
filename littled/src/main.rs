@@ -7,13 +7,17 @@ use serde_json;
 use little::little_service_server::{LittleService, LittleServiceServer};
 use little::{CommandRequest, CommandResponse};
 mod commands;
-use commands::{Command, GetInfoResponse, GetAddressResponse, ListBalancesResponse};
+use commands::{Command, GetInfoResponse, GetAddressResponse, ListBalancesResponse, GetOfferResponse, PeerString, PeerDetailsResponse, StoredOfferDetails};
 use ldk_node::Builder;
 use ldk_node::bitcoin::Network;
+use ldk_node::bitcoin::secp256k1::PublicKey;
+use ldk_node::lightning::ln::msgs::SocketAddress;
+use std::str::FromStr;
 use names::Generator;
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Write};
 use std::path::Path;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 pub mod little {
     tonic::include_proto!("little");
@@ -61,6 +65,57 @@ impl MyLittleService {
         }
     }
 
+    async fn store_offer(&self, offer_string: String, amount_sats: Option<u64>, description: String) -> Result<(), String> {
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+
+        let offer = StoredOfferDetails {
+            offer_string,
+            amount_sats,
+            description,
+            created_at: now,
+        };
+
+        let offers_path = Path::new("./data/offers.json");
+        let mut offers = if offers_path.exists() {
+            let file = File::open(offers_path)
+                .map_err(|e| format!("Failed to open offers file: {}", e))?;
+            serde_json::from_reader::<_, Vec<StoredOfferDetails>>(file)
+                .unwrap_or_default()
+        } else {
+            Vec::new()
+        };
+
+        offers.push(offer);
+
+        let file = OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(offers_path)
+            .map_err(|e| format!("Failed to open offers file for writing: {}", e))?;
+
+        serde_json::to_writer_pretty(file, &offers)
+            .map_err(|e| format!("Failed to write offers: {}", e))?;
+
+        Ok(())
+    }
+
+    async fn load_offers(&self) -> Result<Vec<StoredOfferDetails>, String> {
+        let offers_path = Path::new("./data/offers.json");
+        if !offers_path.exists() {
+            return Ok(Vec::new());
+        }
+
+        let file = File::open(offers_path)
+            .map_err(|e| format!("Failed to open offers file: {}", e))?;
+
+        serde_json::from_reader(file)
+            .map_err(|e| format!("Failed to read offers: {}", e))
+    }
+
     async fn execute_unified_command(&self, command: Command) -> Result<serde_json::Value, String> {
         match command {
             Command::Start { name } => Ok(serde_json::json!({
@@ -101,6 +156,93 @@ impl MyLittleService {
                         "total_onchain_balance_sats": balances.total_onchain_balance_sats,
                         "total_lightning_balance_sats": balances.total_lightning_balance_sats,
                         "spendable_onchain_balance_sats": balances.spendable_onchain_balance_sats,
+                    }))
+                } else {
+                    Err("Node is not running".to_string())
+                }
+            },
+            Command::GetOffer { amount_sats, description } => {
+                let node_lock = self.node.lock().await;
+                if let Some(node) = node_lock.as_ref() {
+                    let desc = description.unwrap_or_else(|| "Payment request via Little".to_string());
+                    println!("Creating offer with description: {}", desc);  // Debug log
+                    let result = match amount_sats {
+                        Some(sats) => {
+                            println!("Fixed amount offer: {} sats", sats);  // Debug log
+                            node.bolt12_payment().receive(
+                                sats * 1000,     // convert sats to msats
+                                &desc,           // description
+                                Some(3600),      // expiry_secs (1 hour)
+                                None,            // quantity
+                            )
+                        },
+                        None => {
+                            println!("Variable amount offer");  // Debug log
+                            node.bolt12_payment().receive_variable_amount(
+                                &desc,           // description
+                                Some(3600),      // expiry_secs (1 hour)
+                            )
+                        },
+                    };
+                    
+                    match result {
+                        Ok(offer) => {
+                            let offer_string = offer.to_string();
+                            // Store the offer details
+                            self.store_offer(
+                                offer_string.clone(),
+                                amount_sats,
+                                desc,
+                            ).await?;
+                            
+                            Ok(serde_json::json!({
+                                "offer_string": offer_string
+                            }))
+                        },
+                        Err(e) => Err(format!("Failed to create offer: {}", e))
+                    }
+                } else {
+                    Err("Node is not running".to_string())
+                }
+            },
+            Command::ListOffers => {
+                let offers = self.load_offers().await?;
+                Ok(serde_json::json!({
+                    "offers": offers
+                }))
+            },
+            Command::Connect { peer } => {
+                let node_lock = self.node.lock().await;
+                if let Some(node) = node_lock.as_ref() {
+                    let node_id = PublicKey::from_str(&peer.node_id)
+                        .map_err(|e| format!("Invalid node ID: {}", e))?;
+                    let address = SocketAddress::from_str(&peer.address)
+                        .map_err(|e| format!("Invalid address: {}", e))?;
+                    
+                    node.connect(node_id, address, true)
+                        .map(|_| serde_json::json!({
+                            "node_id": peer.node_id,
+                            "address": peer.address,
+                        }))
+                        .map_err(|e| format!("Failed to connect to peer: {}", e))
+                } else {
+                    Err("Node is not running".to_string())
+                }
+            },
+            Command::ListPeers => {
+                let node_lock = self.node.lock().await;
+                if let Some(node) = node_lock.as_ref() {
+                    let peers = node.list_peers();
+                    let peer_details: Vec<PeerDetailsResponse> = peers.into_iter()
+                        .map(|peer| PeerDetailsResponse {
+                            node_id: peer.node_id.to_string(),
+                            address: peer.address.to_string(),
+                            is_persisted: peer.is_persisted,
+                        })
+                        .collect();
+                    
+                    Ok(serde_json::json!({
+                        "peers": peer_details
                     }))
                 } else {
                     Err("Node is not running".to_string())
@@ -176,6 +318,24 @@ async fn handle_http_command(
         "getinfo" => Command::GetInfo,
         "getaddress" => Command::GetAddress,
         "listbalances" => Command::ListBalances,
+        "getoffer" => {
+            let amount_sats = command["arguments"].get("amount_sats")
+                .and_then(|v| v.as_u64());
+            let description = command["arguments"].get("description")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string());
+            Command::GetOffer { amount_sats, description }
+        },
+        "connect" => {
+            let peer_str = command["arguments"].get("peer")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| warp::reject::custom(InvalidCommand("Missing peer parameter".to_string())))?;
+            let peer = commands::parse_peer_string(peer_str)
+                .map_err(|e| warp::reject::custom(InvalidCommand(e)))?;
+            Command::Connect { peer }
+        },
+        "listpeers" => Command::ListPeers,
+        "listoffers" => Command::ListOffers,
         _ => return Err(warp::reject::custom(InvalidCommand(format!("Unknown command: {}", command_str))))
     };
 
@@ -278,15 +438,19 @@ fn make_node(alias: &str, port: u16) -> (ldk_node::Node, String) {
     builder.set_chain_source_esplora("https://mutinynet.ltbl.io/api".to_string(), None);
     builder.set_gossip_source_rgs("https://mutinynet.ltbl.io/snapshot".to_string());
     builder.set_storage_dir_path("./data".to_string());
-    builder.set_listening_addresses(vec![format!("127.0.0.1:{}", port).parse().unwrap()]);
+    builder.set_listening_addresses(vec![format!("0.0.0.0:{}", port).parse().unwrap()]);
 
     let node = builder.build().unwrap();
     node.start().unwrap();
 
-    let node_id = node.node_id().to_string();
+    // Wait a moment for the node to initialize
+    std::thread::sleep(std::time::Duration::from_secs(1));
 
-    println!("Node alias: {}", alias);
-    println!("Node public key: {}", node_id);
+    let node_id = node.node_id().to_string();
+    println!("Node started successfully:");
+    println!("  Alias: {}", alias);
+    println!("  Node ID: {}", node_id);
+    println!("  Listening on port: {}", port);
 
     (node, node_id)
 }
