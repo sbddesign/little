@@ -12,6 +12,7 @@ use ldk_node::Builder;
 use ldk_node::bitcoin::Network;
 use ldk_node::bitcoin::secp256k1::PublicKey;
 use ldk_node::lightning::ln::msgs::SocketAddress;
+use ldk_node::config::ChannelConfig;
 use std::str::FromStr;
 use names::Generator;
 use std::fs::{File, OpenOptions};
@@ -248,6 +249,85 @@ impl MyLittleService {
                     Err("Node is not running".to_string())
                 }
             },
+            Command::OpenChannel { 
+                peer_pubkey, 
+                address,
+                amount_sats, 
+                target_conf, 
+                push_amount_sats,
+                announced,
+            } => {
+                let node_lock = self.node.lock().await;
+                if let Some(node) = node_lock.as_ref() {
+                    let peer_pubkey = PublicKey::from_str(&peer_pubkey)
+                        .map_err(|e| format!("Invalid peer public key: {}", e))?;
+                    
+                    let peer_addr = SocketAddress::from_str(&address)
+                        .map_err(|e| format!("Invalid address: {}", e))?;
+
+                    // Check if we're already connected to the peer
+                    let peers = node.list_peers();
+                    let is_connected = peers.iter().any(|p| p.node_id == peer_pubkey);
+
+                    // If not connected, establish connection first
+                    if !is_connected {
+                        println!("Connecting to peer {}@{}", peer_pubkey, address);
+                        if let Err(e) = node.connect(peer_pubkey, peer_addr.clone(), true) {
+                            return Err(format!("Failed to connect to peer: {}", e));
+                        }
+                        // Give it a moment to establish the connection
+                        std::thread::sleep(std::time::Duration::from_secs(1));
+                    }
+
+                    // Create a default channel config
+                    let channel_config = ChannelConfig {
+                        forwarding_fee_proportional_millionths: 1000, // 0.1%
+                        forwarding_fee_base_msat: 1000,              // 1 sat
+                        cltv_expiry_delta: 144,                      // ~24 hours
+                        max_dust_htlc_exposure: ldk_node::config::MaxDustHTLCExposure::FixedLimit { limit_msat: 50000000 }, // 50k sats
+                        force_close_avoidance_max_fee_satoshis: 1000,// 1000 sats
+                        accept_underpaying_htlcs: false,             // Don't accept underpaying HTLCs
+                    };
+
+                    let conf_target = if target_conf > 0 { Some(target_conf as u64) } else { None };
+                    let push_amount = if push_amount_sats > 0 { Some(push_amount_sats * 1000) } else { None }; // Convert to msats
+
+                    println!("Opening {} channel with peer {}@{}", 
+                        if announced { "announced" } else { "unannounced" },
+                        peer_pubkey, address);
+
+                    let result = if announced {
+                        node.open_announced_channel(
+                            peer_pubkey,
+                            peer_addr,
+                            amount_sats,
+                            push_amount,
+                            Some(channel_config),
+                        )
+                    } else {
+                        node.open_channel(
+                            peer_pubkey,
+                            peer_addr,
+                            amount_sats,
+                            push_amount,
+                            Some(channel_config),
+                        )
+                    };
+
+                    result
+                        .map(|channel_id| serde_json::json!({
+                            "channel_id": format!("{}", channel_id.0),  // Convert u128 to string
+                            "peer_pubkey": peer_pubkey.to_string(),
+                            "address": address,
+                            "amount_sats": amount_sats,
+                            "push_amount_sats": push_amount_sats,
+                            "announced": announced,
+                        }))
+                        .map_err(|e| format!("Failed to open channel: {}", e))
+                } else {
+                    Err("Node is not running".to_string())
+                }
+            },
         }
     }
 }
@@ -336,6 +416,38 @@ async fn handle_http_command(
         },
         "listpeers" => Command::ListPeers,
         "listoffers" => Command::ListOffers,
+        "openchannel" => {
+            let args = &command["arguments"];
+            let peer_pubkey = args.get("peer_pubkey")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| warp::reject::custom(InvalidCommand("Missing peer_pubkey parameter".to_string())))?
+                .to_string();
+            
+            let amount_sats = args.get("amount_sats")
+                .and_then(|v| v.as_u64())
+                .ok_or_else(|| warp::reject::custom(InvalidCommand("Missing amount_sats parameter".to_string())))?;
+
+            let address = args.get("address")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| warp::reject::custom(InvalidCommand("Missing address parameter".to_string())))?
+                .to_string();
+
+            Command::OpenChannel {
+                peer_pubkey,
+                address,
+                amount_sats,
+                target_conf: args.get("target_conf")
+                    .and_then(|v| v.as_u64())
+                    .map(|v| v as u32)
+                    .unwrap_or(6),
+                push_amount_sats: args.get("push_amount_sats")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0),
+                announced: args.get("announced")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(true),
+            }
+        },
         _ => return Err(warp::reject::custom(InvalidCommand(format!("Unknown command: {}", command_str))))
     };
 

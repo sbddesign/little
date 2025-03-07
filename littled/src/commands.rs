@@ -27,6 +27,27 @@ pub enum Command {
     ListPeers,
     /// List all created offers
     ListOffers,
+    /// Open a channel with a peer
+    OpenChannel {
+        /// The node ID of the peer to open a channel with
+        #[arg(long)]
+        peer_pubkey: String,
+        /// The address of the peer (e.g. 127.0.0.1:9735)
+        #[arg(long)]
+        address: String,
+        /// The amount in satoshis to fund the channel with
+        #[arg(long)]
+        amount_sats: u64,
+        /// The target number of blocks for the funding transaction to confirm in
+        #[arg(long, default_value = "6")]
+        target_conf: u32,
+        /// Whether to push some initial funds to the counterparty (not supported by LDK Node)
+        #[arg(long, default_value = "0")]
+        push_amount_sats: u64,
+        /// Whether to announce the channel on the network
+        #[arg(long, default_value = "true", action = clap::ArgAction::Set)]
+        announced: bool,
+    },
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
