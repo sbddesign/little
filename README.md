@@ -20,4 +20,6 @@ Run `curl -X POST -H "Content-Type: application/json" -d '{"command": "getinfo",
 - [x] Create `getinfo`
 - [ ] ~~Create `makenode`~~
 - [x] Create `getaddress`
-- [ ] Create `getoffer`
+- [x] Create `getoffer`
+- [ ] `openchannel`
+- [ ] `listchannels`
