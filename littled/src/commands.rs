@@ -16,6 +16,9 @@ pub enum Command {
         /// Port for the HTTP API (default: 3030)
         #[arg(long = "httpport", default_value = "3030")]
         http_port: u16,
+        /// Data directory path (default: ~/.little)
+        #[arg(long = "datadir")]
+        data_dir: Option<String>,
     },
     Stop,
     GetInfo,

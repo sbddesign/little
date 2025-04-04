@@ -7,18 +7,23 @@ use serde_json;
 use little::little_service_server::{LittleService, LittleServiceServer};
 use little::{CommandRequest, CommandResponse};
 mod commands;
-use commands::{Command, GetInfoResponse, GetAddressResponse, ListBalancesResponse, GetOfferResponse, PeerString, PeerDetailsResponse, StoredOfferDetails, ChannelDetailsResponse};
+mod config;
+use commands::{Command, GetAddressResponse, ListBalancesResponse, PeerDetailsResponse, StoredOfferDetails, ChannelDetailsResponse};
+use config::{get_default_data_dir, load_config, save_config};
 use ldk_node::Builder;
 use ldk_node::bitcoin::Network;
 use ldk_node::bitcoin::secp256k1::PublicKey;
 use ldk_node::lightning::ln::msgs::SocketAddress;
 use ldk_node::config::ChannelConfig;
 use std::str::FromStr;
-use names::Generator;
+use std::path::PathBuf;
 use std::fs::{File, OpenOptions};
-use std::io::{Read, Write};
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
+use shellexpand;
+use rand::{thread_rng, Rng};
+use std::error::Error;
+use std::env;
 
 pub mod little {
     tonic::include_proto!("little");
@@ -38,6 +43,7 @@ struct MyLittleService {
     node_id: String,
     node: Arc<Mutex<Option<ldk_node::Node>>>,
     shutdown_signal: Arc<tokio::sync::broadcast::Sender<()>>,
+    data_dir: PathBuf,
 }
 
 impl MyLittleService {
@@ -79,9 +85,9 @@ impl MyLittleService {
             created_at: now,
         };
 
-        let offers_path = Path::new("./data/offers.json");
+        let offers_path = self.data_dir.join("offers.json");
         let mut offers = if offers_path.exists() {
-            let file = File::open(offers_path)
+            let file = File::open(&offers_path)
                 .map_err(|e| format!("Failed to open offers file: {}", e))?;
             serde_json::from_reader::<_, Vec<StoredOfferDetails>>(file)
                 .unwrap_or_default()
@@ -95,7 +101,7 @@ impl MyLittleService {
             .write(true)
             .create(true)
             .truncate(true)
-            .open(offers_path)
+            .open(&offers_path)
             .map_err(|e| format!("Failed to open offers file for writing: {}", e))?;
 
         serde_json::to_writer_pretty(file, &offers)
@@ -105,7 +111,7 @@ impl MyLittleService {
     }
 
     async fn load_offers(&self) -> Result<Vec<StoredOfferDetails>, String> {
-        let offers_path = Path::new("./data/offers.json");
+        let offers_path = self.data_dir.join("offers.json");
         if !offers_path.exists() {
             return Ok(Vec::new());
         }
@@ -119,7 +125,7 @@ impl MyLittleService {
 
     async fn execute_unified_command(&self, command: Command) -> Result<serde_json::Value, String> {
         match command {
-            Command::Start { name, lightning_port, grpc_port, http_port } => Ok(serde_json::json!({
+            Command::Start { name, lightning_port, grpc_port, http_port, data_dir: _ } => Ok(serde_json::json!({
                 "name": name,
                 "lightning_port": lightning_port,
                 "grpc_port": grpc_port,
@@ -283,7 +289,7 @@ impl MyLittleService {
                     }
 
                     // Create a default channel config
-                    let channel_config = ChannelConfig {
+                    let channel_config = ldk_node::config::ChannelConfig {
                         forwarding_fee_proportional_millionths: 1000, // 0.1%
                         forwarding_fee_base_msat: 1000,              // 1 sat
                         cltv_expiry_delta: 144,                      // ~24 hours
@@ -433,7 +439,7 @@ async fn handle_http_command(
                 .and_then(|v| v.as_u64())
                 .map(|v| v as u16)
                 .unwrap_or(3030);
-            Command::Start { name, lightning_port, grpc_port, http_port }
+            Command::Start { name, lightning_port, grpc_port, http_port, data_dir: None }
         },
         "stop" => Command::Stop,
         "getinfo" => Command::GetInfo,
@@ -514,93 +520,133 @@ struct InvalidCommand(String);
 impl warp::reject::Reject for InvalidCommand {}
 
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // Parse CLI arguments first
+async fn main() -> Result<(), Box<dyn Error>> {
     let cli = Cli::parse();
-    
-    // Extract port configurations if starting the node
-    let (lightning_port, grpc_port, http_port) = match &cli.command {
-        Command::Start { lightning_port, grpc_port, http_port, .. } => (*lightning_port, *grpc_port, *http_port),
-        _ => (9735, 50051, 3030), // Default ports for other commands
-    };
 
-    let alias = match load_alias()? {
-        Some(saved_alias) => saved_alias,
-        None => {
-            let mut generator = Generator::default();
-            let new_alias = generator.next().unwrap();
-            save_alias(&new_alias)?;
-            new_alias
+    // Parse command line arguments
+    let mut args = env::args().skip(1);
+    let mut data_dir = None;
+    let mut lightning_port = None;
+    let mut grpc_port = None;
+    let mut http_port = None;
+
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "--datadir" => {
+                if let Some(dir) = args.next() {
+                    data_dir = Some(PathBuf::from(shellexpand::tilde(&dir).into_owned()));
+                }
+            }
+            "--lightningport" => {
+                if let Some(port) = args.next() {
+                    lightning_port = Some(port.parse::<u16>().unwrap());
+                }
+            }
+            "--grpcport" => {
+                if let Some(port) = args.next() {
+                    grpc_port = Some(port.parse::<u16>().unwrap());
+                }
+            }
+            "--httpport" => {
+                if let Some(port) = args.next() {
+                    http_port = Some(port.parse::<u16>().unwrap());
+                }
+            }
+            _ => {}
         }
+    }
+
+    // Determine data directory
+    let data_dir = if let Some(dir) = data_dir {
+        dir
+    } else {
+        get_default_data_dir()
     };
 
-    let (node, node_id) = make_node(&alias, lightning_port);
-    let (shutdown_tx, _) = tokio::sync::broadcast::channel(1);
+    println!("Using data directory: {}", data_dir.display());
 
+    // Create data directory if it doesn't exist
+    if !data_dir.exists() {
+        std::fs::create_dir_all(&data_dir)
+            .map_err(|e| format!("Failed to create data directory: {}", e))?;
+    }
+
+    // Load or create config
+    let config = load_config(&data_dir)?;
+
+    // Create shutdown signal
+    let (shutdown_sender, _) = tokio::sync::broadcast::channel(1);
+    let shutdown_signal = Arc::new(shutdown_sender);
+
+    // Start the node with the correct data directory
+    let (node, node_id) = make_node(&config.node_alias, config.lightning_port, &data_dir);
+
+    // Create service with the correct data directory
     let service = MyLittleService {
-        state: Arc::new(Mutex::new(String::new())),
-        alias,
+        state: Arc::new(Mutex::new("initialized".to_string())),
+        alias: config.node_alias,
         node_id,
         node: Arc::new(Mutex::new(Some(node))),
-        shutdown_signal: Arc::new(shutdown_tx),
+        shutdown_signal: shutdown_signal.clone(),
+        data_dir: data_dir.clone(),
     };
-    
-    let grpc_addr = format!("[::1]:{}", grpc_port).parse()?;
+
+    // Start gRPC server
+    let grpc_addr = format!("[::1]:{}", config.grpc_port).parse()?;
     let grpc_service = LittleServiceServer::new(service.clone());
-    
-    // Create a new receiver for gRPC server
-    let mut grpc_shutdown_rx = service.shutdown_signal.subscribe();
-    let grpc_server = Server::builder().add_service(grpc_service).serve_with_shutdown(
-        grpc_addr,
-        async move {
-            grpc_shutdown_rx.recv().await.ok();
-            println!("Shutting down gRPC server...");
-        },
-    );
+    let grpc_server = Server::builder()
+        .add_service(grpc_service)
+        .serve(grpc_addr);
 
     println!("gRPC server listening on {}", grpc_addr);
 
-    let http_addr = ([127, 0, 0, 1], http_port);
-    
-    // Create a new clone for the HTTP routes
-    let http_service = service.clone();
+    // Start HTTP server
+    let http_addr = format!("127.0.0.1:{}", config.http_port);
     let http_routes = warp::post()
         .and(warp::path("little"))
         .and(warp::path("api"))
         .and(warp::path("v1"))
         .and(warp::path("command"))
         .and(warp::body::json())
-        .and(warp::any().map(move || http_service.clone()))
+        .and(warp::any().map(move || service.clone()))
         .and_then(handle_http_command);
 
-    // Create a new receiver for HTTP server
-    let mut http_shutdown_rx = service.shutdown_signal.subscribe();
+    let http_shutdown_signal = shutdown_signal.clone();
     let (_, http_server) = warp::serve(http_routes)
         .bind_with_graceful_shutdown(
-            http_addr,
+            http_addr.parse::<std::net::SocketAddr>()
+                .map_err(|e| format!("Failed to parse HTTP address: {}", e))?,
             async move {
-                http_shutdown_rx.recv().await.ok();
+                let mut shutdown_receiver = http_shutdown_signal.subscribe();
+                shutdown_receiver.recv().await.ok();
                 println!("Shutting down HTTP server...");
             },
         );
 
-    println!("HTTP server listening on http://{:?}", http_addr);
+    println!("HTTP server listening on http://{}", http_addr);
 
-    tokio::join!(
-        grpc_server,
-        http_server,
-    );
+    // Start both servers
+    let shutdown_signal_clone = shutdown_signal.clone();
+    tokio::select! {
+        _ = grpc_server => {},
+        _ = http_server => {},
+        _ = async move {
+            // Wait for shutdown signal
+            let mut shutdown_receiver = shutdown_signal_clone.subscribe();
+            shutdown_receiver.recv().await.ok();
+            println!("Shutting down servers...");
+        } => {},
+    }
 
-    println!("Servers shut down successfully");
     Ok(())
 }
 
-fn make_node(alias: &str, port: u16) -> (ldk_node::Node, String) {
+fn make_node(alias: &str, port: u16, data_dir: &Path) -> (ldk_node::Node, String) {
     let mut builder = Builder::new();
     builder.set_network(Network::Signet);
     builder.set_chain_source_esplora("https://mutinynet.ltbl.io/api".to_string(), None);
     builder.set_gossip_source_rgs("https://mutinynet.ltbl.io/snapshot".to_string());
-    builder.set_storage_dir_path("./data".to_string());
+    builder.set_storage_dir_path(data_dir.to_string_lossy().to_string());
     builder.set_listening_addresses(vec![format!("0.0.0.0:{}", port).parse().unwrap()]);
 
     let node = builder.build().unwrap();
@@ -614,29 +660,8 @@ fn make_node(alias: &str, port: u16) -> (ldk_node::Node, String) {
     println!("  Alias: {}", alias);
     println!("  Node ID: {}", node_id);
     println!("  Listening on port: {}", port);
+    println!("  Data directory: {}", data_dir.display());
 
     (node, node_id)
-}
-
-fn save_alias(alias: &str) -> std::io::Result<()> {
-    let path = Path::new("./data/node_alias.txt");
-    let mut file = OpenOptions::new()
-        .write(true)
-        .create(true)
-        .open(path)?;
-    file.write_all(alias.as_bytes())?;
-    Ok(())
-}
-
-fn load_alias() -> std::io::Result<Option<String>> {
-    let path = Path::new("./data/node_alias.txt");
-    if path.exists() {
-        let mut file = File::open(path)?;
-        let mut contents = String::new();
-        file.read_to_string(&mut contents)?;
-        Ok(Some(contents))
-    } else {
-        Ok(None)
-    }
 }
 
