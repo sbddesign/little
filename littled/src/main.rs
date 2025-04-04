@@ -278,14 +278,27 @@ impl MyLittleService {
                     let peers = node.list_peers();
                     let is_connected = peers.iter().any(|p| p.node_id == peer_pubkey);
 
+                    println!("Current peer status: {}", if is_connected { "connected" } else { "not connected" });
+
                     // If not connected, establish connection first
                     if !is_connected {
-                        println!("Connecting to peer {}@{}", peer_pubkey, address);
-                        if let Err(e) = node.connect(peer_pubkey, peer_addr.clone(), true) {
-                            return Err(format!("Failed to connect to peer: {}", e));
+                        println!("Attempting to connect to peer {}@{}", peer_pubkey, address);
+                        match node.connect(peer_pubkey, peer_addr.clone(), true) {
+                            Ok(_) => {
+                                println!("Successfully connected to peer");
+                                // Give it a moment to establish the connection
+                                std::thread::sleep(std::time::Duration::from_secs(2));
+                                
+                                // Verify the connection was successful
+                                let peers = node.list_peers();
+                                if !peers.iter().any(|p| p.node_id == peer_pubkey) {
+                                    return Err("Failed to establish connection with peer".to_string());
+                                }
+                            },
+                            Err(e) => {
+                                return Err(format!("Failed to connect to peer: {}", e));
+                            }
                         }
-                        // Give it a moment to establish the connection
-                        std::thread::sleep(std::time::Duration::from_secs(1));
                     }
 
                     // Create a default channel config
@@ -323,16 +336,23 @@ impl MyLittleService {
                         )
                     };
 
-                    result
-                        .map(|channel_id| serde_json::json!({
-                            "channel_id": format!("{}", channel_id.0),  // Convert u128 to string
-                            "peer_pubkey": peer_pubkey.to_string(),
-                            "address": address,
-                            "amount_sats": amount_sats,
-                            "push_amount_sats": push_amount_sats,
-                            "announced": announced,
-                        }))
-                        .map_err(|e| format!("Failed to open channel: {}", e))
+                    match result {
+                        Ok(channel_id) => {
+                            println!("Successfully opened channel with ID: {}", channel_id.0);
+                            Ok(serde_json::json!({
+                                "channel_id": format!("{}", channel_id.0),  // Convert u128 to string
+                                "peer_pubkey": peer_pubkey.to_string(),
+                                "address": address,
+                                "amount_sats": amount_sats,
+                                "push_amount_sats": push_amount_sats,
+                                "announced": announced,
+                            }))
+                        },
+                        Err(e) => {
+                            println!("Failed to open channel: {}", e);
+                            Err(format!("Failed to open channel: {}", e))
+                        }
+                    }
                 } else {
                     Err("Node is not running".to_string())
                 }
@@ -647,8 +667,14 @@ fn make_node(alias: &str, port: u16, data_dir: &Path) -> (ldk_node::Node, String
     builder.set_chain_source_esplora("https://mutinynet.ltbl.io/api".to_string(), None);
     builder.set_gossip_source_rgs("https://mutinynet.ltbl.io/snapshot".to_string());
     builder.set_storage_dir_path(data_dir.to_string_lossy().to_string());
-    builder.set_listening_addresses(vec![format!("0.0.0.0:{}", port).parse().unwrap()]);
+    
+    // Configure listening address
+    let listening_address = format!("0.0.0.0:{}", port).parse().unwrap();
+    builder.set_listening_addresses(vec![listening_address]);
 
+    // Configure alias
+    builder.set_node_alias(alias.to_string());
+    
     let node = builder.build().unwrap();
     node.start().unwrap();
 
