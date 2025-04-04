@@ -377,6 +377,7 @@ impl MyLittleService {
                             is_channel_ready: channel.is_channel_ready,
                             is_usable: channel.is_usable,
                             cltv_expiry_delta: channel.cltv_expiry_delta,
+                            announced: channel.is_announced,
                         })
                         .collect();
                     

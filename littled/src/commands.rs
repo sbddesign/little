@@ -127,6 +127,7 @@ pub struct ChannelDetailsResponse {
     pub is_channel_ready: bool,
     pub is_usable: bool,
     pub cltv_expiry_delta: Option<u16>,
+    pub announced: bool,
 }
 
 pub fn parse_peer_string(s: &str) -> Result<PeerString, String> {
