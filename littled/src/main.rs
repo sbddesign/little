@@ -119,8 +119,11 @@ impl MyLittleService {
 
     async fn execute_unified_command(&self, command: Command) -> Result<serde_json::Value, String> {
         match command {
-            Command::Start { name } => Ok(serde_json::json!({
+            Command::Start { name, lightning_port, grpc_port, http_port } => Ok(serde_json::json!({
                 "name": name,
+                "lightning_port": lightning_port,
+                "grpc_port": grpc_port,
+                "http_port": http_port,
             })),
             Command::Stop => {
                 if let Some(node) = self.node.lock().await.take() {
@@ -422,7 +425,19 @@ async fn handle_http_command(
     let command = match command_str.as_str() {
         "start" => {
             let name = command["arguments"].get(0).and_then(|v| v.as_str()).map(|s| s.to_string());
-            Command::Start { name }
+            let lightning_port = command["arguments"].get("lightning_port")
+                .and_then(|v| v.as_u64())
+                .map(|v| v as u16)
+                .unwrap_or(9735);
+            let grpc_port = command["arguments"].get("grpc_port")
+                .and_then(|v| v.as_u64())
+                .map(|v| v as u16)
+                .unwrap_or(50051);
+            let http_port = command["arguments"].get("http_port")
+                .and_then(|v| v.as_u64())
+                .map(|v| v as u16)
+                .unwrap_or(3030);
+            Command::Start { name, lightning_port, grpc_port, http_port }
         },
         "stop" => Command::Stop,
         "getinfo" => Command::GetInfo,
@@ -504,6 +519,15 @@ impl warp::reject::Reject for InvalidCommand {}
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Parse CLI arguments first
+    let cli = Cli::parse();
+    
+    // Extract port configurations if starting the node
+    let (lightning_port, grpc_port, http_port) = match &cli.command {
+        Command::Start { lightning_port, grpc_port, http_port, .. } => (*lightning_port, *grpc_port, *http_port),
+        _ => (9735, 50051, 3030), // Default ports for other commands
+    };
+
     let alias = match load_alias()? {
         Some(saved_alias) => saved_alias,
         None => {
@@ -514,7 +538,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     };
 
-    let (node, node_id) = make_node(&alias, 9735);
+    let (node, node_id) = make_node(&alias, lightning_port);
     let (shutdown_tx, _) = tokio::sync::broadcast::channel(1);
 
     let service = MyLittleService {
@@ -525,7 +549,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         shutdown_signal: Arc::new(shutdown_tx),
     };
     
-    let grpc_addr = "[::1]:50051".parse()?;
+    let grpc_addr = format!("[::1]:{}", grpc_port).parse()?;
     let grpc_service = LittleServiceServer::new(service.clone());
     
     // Create a new receiver for gRPC server
@@ -540,7 +564,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     println!("gRPC server listening on {}", grpc_addr);
 
-    let http_addr = ([127, 0, 0, 1], 3030);
+    let http_addr = ([127, 0, 0, 1], http_port);
     
     // Create a new clone for the HTTP routes
     let http_service = service.clone();

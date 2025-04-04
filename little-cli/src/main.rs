@@ -6,6 +6,8 @@ use tokio::time::sleep;
 use std::time::Duration;
 use std::error::Error;
 use std::fmt;
+use std::env;
+use std::path::PathBuf;
 
 pub mod little {
     tonic::include_proto!("little");
@@ -33,20 +35,51 @@ impl Error for CliError {}
 #[derive(Parser)]
 #[command(author, version, about, long_about = None)]
 struct Cli {
+    /// Port for the gRPC API (default: 50051)
+    #[arg(long = "grpcport", default_value = "50051")]
+    grpc_port: u16,
+
     #[command(subcommand)]
     command: littled::commands::Command,
 }
 
-async fn is_daemon_running() -> bool {
-    match LittleServiceClient::connect("http://[::1]:50051").await {
+async fn is_daemon_running(grpc_port: u16) -> bool {
+    match LittleServiceClient::connect(format!("http://[::1]:{}", grpc_port)).await {
         Ok(_) => true,
         Err(_) => false,
     }
 }
 
-async fn start_daemon() -> Result<(), CliError> {
+async fn start_daemon(lightning_port: u16, grpc_port: u16, http_port: u16) -> Result<(), CliError> {
     println!("Starting littled daemon...");
-    let mut child = ProcessCommand::new("./target/debug/littled")
+    
+    // Get the path to the current executable
+    let current_exe = env::current_exe()
+        .map_err(|e| CliError::DaemonStart(format!("Failed to get current executable path: {}", e)))?;
+    
+    // Get the directory containing the current executable
+    let current_dir = current_exe.parent()
+        .ok_or_else(|| CliError::DaemonStart("Failed to get parent directory".to_string()))?;
+    
+    // Construct the path to littled in the same directory
+    let daemon_path = current_dir.join("littled");
+    
+    // Check if the daemon exists
+    if !daemon_path.exists() {
+        return Err(CliError::DaemonStart(format!(
+            "Daemon binary not found at {}. Please ensure littled is in the same directory as little-cli.",
+            daemon_path.display()
+        )));
+    }
+
+    let mut child = ProcessCommand::new(daemon_path)
+        .arg("start")
+        .arg("--lightningport")
+        .arg(lightning_port.to_string())
+        .arg("--grpcport")
+        .arg(grpc_port.to_string())
+        .arg("--httpport")
+        .arg(http_port.to_string())
         .spawn()
         .map_err(|e| CliError::DaemonStart(e.to_string()))?;
 
@@ -68,12 +101,14 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let cli = Cli::parse();
 
     // If this is a start command and daemon isn't running, start it
-    if matches!(cli.command, littled::commands::Command::Start { .. }) && !is_daemon_running().await {
-        start_daemon().await?;
+    if let littled::commands::Command::Start { lightning_port, grpc_port, http_port, .. } = cli.command {
+        if !is_daemon_running(grpc_port).await {
+            start_daemon(lightning_port, grpc_port, http_port).await?;
+        }
     }
 
     // Try to connect to the daemon
-    let mut client = LittleServiceClient::connect("http://[::1]:50051").await
+    let mut client = LittleServiceClient::connect(format!("http://[::1]:{}", cli.grpc_port)).await
         .map_err(|e| CliError::Connection(e.to_string()))?;
 
     let request = tonic::Request::new(CommandRequest {

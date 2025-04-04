@@ -4,7 +4,19 @@ use clap::Subcommand;
 #[derive(Debug, Clone, Deserialize, Serialize, Subcommand)]
 #[command(rename_all = "lowercase")]
 pub enum Command {
-    Start { name: Option<String> },
+    Start {
+        /// Optional name for the node
+        name: Option<String>,
+        /// Port for the Lightning Network P2P protocol (default: 9735)
+        #[arg(long = "lightningport", default_value = "9735")]
+        lightning_port: u16,
+        /// Port for the gRPC API (default: 50051)
+        #[arg(long = "grpcport", default_value = "50051")]
+        grpc_port: u16,
+        /// Port for the HTTP API (default: 3030)
+        #[arg(long = "httpport", default_value = "3030")]
+        http_port: u16,
+    },
     Stop,
     GetInfo,
     GetAddress,
