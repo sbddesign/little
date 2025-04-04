@@ -120,7 +120,22 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let response = client.execute_command(request).await
         .map_err(|e| CliError::Command(e.to_string()))?;
     
-    println!("RESPONSE={:?}", response);
+    // Format the response in a cleaner way
+    let response = response.into_inner();
+    if response.status == "error" {
+        println!("Error: {}", response.message);
+    } else {
+        // Try to parse the message as JSON and pretty print it
+        match serde_json::from_str::<serde_json::Value>(&response.message) {
+            Ok(json) => {
+                println!("{}", serde_json::to_string_pretty(&json).unwrap());
+            },
+            Err(_) => {
+                // If it's not valid JSON, just print the message as is
+                println!("{}", response.message);
+            }
+        }
+    }
 
     Ok(())
 }

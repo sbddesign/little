@@ -372,8 +372,6 @@ impl LittleService for MyLittleService {
         request: Request<CommandRequest>,
     ) -> Result<Response<CommandResponse>, Status> {
         let req = request.into_inner();
-        println!("Received gRPC command: {:?}", req);
-
         let command: Command = serde_json::from_str(&req.command)
             .map_err(|e| Status::invalid_argument(format!("Invalid command: {}", e)))?;
 
@@ -419,8 +417,6 @@ async fn handle_http_command(
     command: serde_json::Value,
     service: MyLittleService,
 ) -> Result<impl warp::Reply, warp::Rejection> {
-    println!("Received HTTP command: {:?}", command);
-
     let command_str = command["command"].as_str().unwrap_or("").to_lowercase();
     let command = match command_str.as_str() {
         "start" => {
