@@ -23,3 +23,5 @@ Run `curl -X POST -H "Content-Type: application/json" -d '{"command": "getinfo",
 - [x] Create `getoffer`
 - [x] `openchannel`
 - [x] `listchannels`
+- [ ] `payoffer`
+- [ ] `payinvoice`
