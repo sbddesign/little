@@ -8,7 +8,7 @@ use little::little_service_server::{LittleService, LittleServiceServer};
 use little::{CommandRequest, CommandResponse};
 mod commands;
 mod config;
-use commands::{Command, GetAddressResponse, ListBalancesResponse, PeerDetailsResponse, StoredOfferDetails, ChannelDetailsResponse};
+use commands::{Command, GetAddressResponse, ListBalancesResponse, PeerDetailsResponse, StoredOfferDetails, ChannelDetailsResponse, PaymentDetailsResponse};
 use config::{get_default_data_dir, load_config};
 use ldk_node::Builder;
 use ldk_node::bitcoin::Network;
@@ -629,6 +629,62 @@ impl MyLittleService {
                     Err("Node is not running".to_string())
                 }
             },
+            Command::ListPayments => {
+                let node_lock = self.node.lock().await;
+                if let Some(node) = node_lock.as_ref() {
+                    let payment_list = node.list_payments();
+                    
+                    // Map LDK payment details to our response format
+                    let payment_details: Vec<PaymentDetailsResponse> = payment_list.into_iter()
+                        .map(|payment| {
+                            // Convert direction enum to string
+                            let direction = match payment.direction {
+                                ldk_node::payment::PaymentDirection::Outbound => "outbound",
+                                ldk_node::payment::PaymentDirection::Inbound => "inbound",
+                            };
+                            
+                            // Extract payment hash from Bolt11 payments
+                            let payment_hash = match &payment.kind {
+                                ldk_node::payment::PaymentKind::Bolt11 { hash, .. } => {
+                                    Some(hex::encode(hash.0))
+                                },
+                                _ => None,
+                            };
+                            
+                            // For description, we have to use a placeholder since it's not directly available
+                            let description = match &payment.kind {
+                                ldk_node::payment::PaymentKind::Bolt11 { .. } => {
+                                    Some("BOLT 11 Payment".to_string())
+                                },
+                                ldk_node::payment::PaymentKind::Onchain => {
+                                    Some("On-chain Transaction".to_string())
+                                },
+                                _ => None,
+                            };
+                            
+                            // Default to 0 if amount is None
+                            let amount = payment.amount_msat.unwrap_or(0);
+                            
+                            PaymentDetailsResponse {
+                                id: hex::encode(payment.id.0),
+                                amount_msat: amount,
+                                fee_paid_msat: None, // Fee information not directly available
+                                status: format!("{:?}", payment.status),
+                                payment_hash: payment_hash.unwrap_or_else(|| "N/A".to_string()),
+                                direction: direction.to_string(),
+                                timestamp: payment.latest_update_timestamp,
+                                description,
+                            }
+                        })
+                        .collect();
+                    
+                    Ok(serde_json::json!({
+                        "payments": payment_details
+                    }))
+                } else {
+                    Err("Node is not running".to_string())
+                }
+            },
         }
     }
 }
@@ -805,6 +861,7 @@ async fn handle_http_command(
                 
             Command::PayInvoice { invoice, amount_sat }
         },
+        "listpayments" => Command::ListPayments,
         _ => return Err(warp::reject::custom(InvalidCommand(format!("Unknown command: {}", command_str))))
     };
 

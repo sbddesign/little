@@ -102,6 +102,8 @@ pub enum Command {
         #[arg(long)]
         amount_sat: Option<u64>,
     },
+    /// List payment history
+    ListPayments,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -180,6 +182,18 @@ pub struct InvoiceResponse {
     pub amount_sat: Option<u64>,
     pub expiry_seconds: u32,
     pub description: String,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct PaymentDetailsResponse {
+    pub id: String,
+    pub amount_msat: u64,
+    pub fee_paid_msat: Option<u64>,
+    pub status: String,
+    pub payment_hash: String,
+    pub direction: String,
+    pub timestamp: u64,
+    pub description: Option<String>,
 }
 
 pub fn parse_peer_string(s: &str) -> Result<PeerString, String> {
