@@ -430,10 +430,19 @@ impl MyLittleService {
                                 Some(sats) => sats,
                                 None => return Err("Amount is required for variable amount offers".to_string())
                             };
+
+                            // Basic validation of amount
+                            if amount == 0 {
+                                return Err("Payment amount must be greater than zero".to_string());
+                            }
                             
+                            // Consider adding upper bound validation if needed
+                            // e.g., if amount > 1_000_000 { // 1 million sats
+                            //     return Err("Payment amount exceeds maximum allowed".to_string());
+                            // }
+
                             // Convert to msats
                             let amount_msat = amount * 1000;
-                            
                             let bolt12_payment = node.bolt12_payment();
                             // send_using_amount(offer, amount_msat, max_abs_routing_fee_msat, payment_timeout_secs)
                             bolt12_payment.send_using_amount(
