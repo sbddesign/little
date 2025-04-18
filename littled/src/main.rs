@@ -495,6 +495,60 @@ impl MyLittleService {
                     Err("Node is not running".to_string())
                 }
             },
+            Command::GetInvoice { amount_sat, expiry, description } => {
+                let node_lock = self.node.lock().await;
+                if let Some(node) = node_lock.as_ref() {
+                    let bolt11_payment = node.bolt11_payment();
+                    
+                    // Generate either a variable-amount or fixed-amount invoice
+                    let result = match amount_sat {
+                        Some(sats) => {
+                            // Fixed amount invoice
+                            if sats == 0 {
+                                return Err("Amount must be greater than zero for fixed-amount invoices".to_string());
+                            }
+                            
+                            // Convert to millisatoshis
+                            let amount_msat = sats * 1000;
+                            
+                            // Generate invoice with the specified amount
+                            bolt11_payment.receive(
+                                amount_msat,
+                                &description,
+                                expiry, // expiry in seconds
+                            )
+                        },
+                        None => {
+                            // Variable amount invoice
+                            bolt11_payment.receive_variable_amount(
+                                &description,
+                                expiry, // expiry in seconds
+                            )
+                        }
+                    };
+                    
+                    match result {
+                        Ok(invoice) => {
+                            // Convert the invoice to a string representation
+                            let invoice_string = invoice.to_string();
+                            println!("Generated invoice: {}", invoice_string);
+                            
+                            Ok(serde_json::json!({
+                                "invoice_string": invoice_string,
+                                "amount_sat": amount_sat,
+                                "expiry_seconds": expiry,
+                                "description": description,
+                            }))
+                        },
+                        Err(e) => {
+                            println!("Failed to generate invoice: {}", e);
+                            Err(format!("Failed to generate invoice: {}", e))
+                        }
+                    }
+                } else {
+                    Err("Node is not running".to_string())
+                }
+            },
         }
     }
 }
@@ -643,6 +697,22 @@ async fn handle_http_command(
                 .map(|s| s.to_string());
                 
             Command::PayOffer { offer, amount_sat, payer_note }
+        },
+        "getinvoice" => {
+            let amount_sat = command["arguments"].get("amount_sat")
+                .and_then(|v| v.as_u64());
+                
+            let expiry = command["arguments"].get("expiry")
+                .and_then(|v| v.as_u64())
+                .map(|v| v as u32)
+                .unwrap_or(86400); // Default: 24 hours
+                
+            let description = command["arguments"].get("description")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string())
+                .unwrap_or_else(|| "Payment to Little Lightning Node".to_string());
+                
+            Command::GetInvoice { amount_sat, expiry, description }
         },
         _ => return Err(warp::reject::custom(InvalidCommand(format!("Unknown command: {}", command_str))))
     };
