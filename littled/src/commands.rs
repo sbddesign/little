@@ -69,6 +69,18 @@ pub enum Command {
         #[arg(long, default_value = "true", action = clap::ArgAction::Set)]
         announced: bool,
     },
+    /// Pay a BOLT 12 offer
+    PayOffer {
+        /// The BOLT 12 offer string to pay
+        #[arg(long)]
+        offer: String,
+        /// The amount in satoshis to pay (required for variable amount offers)
+        #[arg(long)]
+        amount_sat: Option<u64>,
+        /// A note to include with the payment
+        #[arg(long)]
+        payer_note: Option<String>,
+    },
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -132,6 +144,13 @@ pub struct ChannelDetailsResponse {
     pub is_usable: bool,
     pub cltv_expiry_delta: Option<u16>,
     pub announced: bool,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct PaymentResponse {
+    pub payment_id: String,
+    pub amount_msat: u64,
+    pub status: String,
 }
 
 pub fn parse_peer_string(s: &str) -> Result<PeerString, String> {

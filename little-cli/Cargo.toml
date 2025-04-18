@@ -22,6 +22,3 @@ tonic-build = "0.12.3"
 
 [dev-dependencies]
 tokio-test = "0.4.2"
-
-[build]
-build-script = "build.rs"
