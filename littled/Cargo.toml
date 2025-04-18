@@ -21,6 +21,8 @@ tonic = "0.12.3"
 prost = "0.13.5"
 warp = "0.3"
 names = "0.14.0"
+shellexpand = "2.1"
+rand = "0.8"
 
 [build-dependencies]
 tonic-build = "0.12.3"
