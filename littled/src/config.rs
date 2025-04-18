@@ -1,6 +1,6 @@
 use std::path::{Path, PathBuf};
-use std::fs::{File, OpenOptions};
-use std::io::{Read, Write};
+use std::fs::OpenOptions;
+use std::io::Write;
 use serde::{Deserialize, Serialize};
 use std::env;
 use std::error::Error;

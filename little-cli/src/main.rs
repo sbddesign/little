@@ -4,7 +4,6 @@ use little::CommandRequest;
 use std::process::Command as ProcessCommand;
 use std::error::Error;
 use std::fmt;
-use std::env;
 use std::path::PathBuf;
 use littled::config::{get_default_data_dir, load_config};
 use littled::commands::Command;
@@ -15,7 +14,6 @@ pub mod little {
 
 #[derive(Debug)]
 enum CliError {
-    DaemonStart(String),
     Connection(String),
     Command(String),
 }
@@ -23,7 +21,6 @@ enum CliError {
 impl fmt::Display for CliError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            CliError::DaemonStart(msg) => write!(f, "Failed to start daemon: {}", msg),
             CliError::Connection(msg) => write!(f, "Connection error: {}", msg),
             CliError::Command(msg) => write!(f, "Command error: {}", msg),
         }

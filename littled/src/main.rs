@@ -9,19 +9,17 @@ use little::{CommandRequest, CommandResponse};
 mod commands;
 mod config;
 use commands::{Command, GetAddressResponse, ListBalancesResponse, PeerDetailsResponse, StoredOfferDetails, ChannelDetailsResponse};
-use config::{get_default_data_dir, load_config, save_config};
+use config::{get_default_data_dir, load_config};
 use ldk_node::Builder;
 use ldk_node::bitcoin::Network;
 use ldk_node::bitcoin::secp256k1::PublicKey;
 use ldk_node::lightning::ln::msgs::SocketAddress;
-use ldk_node::config::ChannelConfig;
 use std::str::FromStr;
 use std::path::PathBuf;
 use std::fs::{File, OpenOptions};
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 use shellexpand;
-use rand::{thread_rng, Rng};
 use std::error::Error;
 use std::env;
 
@@ -403,6 +401,100 @@ impl MyLittleService {
                     Err("Node is not running".to_string())
                 }
             },
+            Command::PayOffer { offer, amount_sat, payer_note } => {
+                let node_lock = self.node.lock().await;
+                if let Some(node) = node_lock.as_ref() {
+                    // Parse the offer string
+                    let offer = match ldk_node::lightning::offers::offer::Offer::from_str(&offer) {
+                        Ok(o) => o,
+                        Err(e) => return Err(format!("Invalid offer string: {:?}", e))
+                    };
+                    
+                    println!("Paying offer: {}", offer);
+                    
+                    // In the current LDK Node API version (0.4.3), the payer_note can't be included
+                    // in the payment directly. We'll log it for reference.
+                    if let Some(note) = &payer_note {
+                        println!("Payer note for reference (not sent with payment): {}", note);
+                    }
+                    
+                    // Handle both fixed and variable amount offers
+                    let result = match offer.amount() {
+                        Some(_) => {
+                            // Fixed amount offer
+                            let bolt12_payment = node.bolt12_payment();
+                            bolt12_payment.send(
+                                &offer,
+                                None, // max_abs_routing_fee_msat (default)
+                                None, // payment_timeout_secs (default)
+                            )
+                        },
+                        None => {
+                            // Variable amount offer - amount_sat is required
+                            let amount = match amount_sat {
+                                Some(sats) => sats,
+                                None => return Err("Amount is required for variable amount offers".to_string())
+                            };
+
+                            // Basic validation of amount
+                            if amount == 0 {
+                                return Err("Payment amount must be greater than zero".to_string());
+                            }
+                            
+                            // Consider adding upper bound validation if needed
+                            // e.g., if amount > 1_000_000 { // 1 million sats
+                            //     return Err("Payment amount exceeds maximum allowed".to_string());
+                            // }
+
+                            // Convert to msats
+                            let amount_msat = amount * 1000;
+                            let bolt12_payment = node.bolt12_payment();
+                            bolt12_payment.send_using_amount(
+                                &offer,
+                                amount_msat,
+                                None, // max_abs_routing_fee_msat (default)
+                                None, // payment_timeout_secs (default)
+                            )
+                        }
+                    };
+                    
+                    match result {
+                        Ok(payment_id) => {
+                            println!("Payment initiated! Payment ID: {:?}", payment_id.0);
+                            
+                            // Get payment information
+                            let payments = node.list_payments_with_filter(|p| p.id == payment_id);
+                            let mut payment_info = if !payments.is_empty() {
+                                let payment = &payments[0];
+                                serde_json::json!({
+                                    "payment_id": hex::encode(payment_id.0),
+                                    "amount_msat": payment.amount_msat,
+                                    "status": format!("{:?}", payment.status)
+                                })
+                            } else {
+                                // Fallback if payment info is not immediately available
+                                serde_json::json!({
+                                    "payment_id": hex::encode(payment_id.0),
+                                    "status": "pending"
+                                })
+                            };
+                            
+                            // Include the payer note in our response (even though it's not sent with the payment)
+                            if let Some(note) = payer_note {
+                                payment_info["payer_note"] = serde_json::Value::String(note);
+                            }
+                            
+                            Ok(payment_info)
+                        },
+                        Err(e) => {
+                            println!("Payment failed: {}", e);
+                            Err(format!("Failed to make payment: {}", e))
+                        }
+                    }
+                } else {
+                    Err("Node is not running".to_string())
+                }
+            },
         }
     }
 }
@@ -537,6 +629,21 @@ async fn handle_http_command(
             }
         },
         "listchannels" => Command::ListChannels,
+        "payoffer" => {
+            let offer = command["arguments"].get("offer")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| warp::reject::custom(InvalidCommand("Missing offer parameter".to_string())))?
+                .to_string();
+                
+            let amount_sat = command["arguments"].get("amount_sat")
+                .and_then(|v| v.as_u64());
+                
+            let payer_note = command["arguments"].get("payer_note")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string());
+                
+            Command::PayOffer { offer, amount_sat, payer_note }
+        },
         _ => return Err(warp::reject::custom(InvalidCommand(format!("Unknown command: {}", command_str))))
     };
 
