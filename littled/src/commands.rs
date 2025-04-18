@@ -6,19 +6,23 @@ use clap::Subcommand;
 pub enum Command {
     Start {
         /// Optional name for the node
+        #[arg(long = "name")]
         name: Option<String>,
-        /// Port for the Lightning Network P2P protocol (default: 9735)
-        #[arg(long = "lightningport", default_value = "9735")]
-        lightning_port: u16,
-        /// Port for the gRPC API (default: 50051)
-        #[arg(long = "grpcport", default_value = "50051")]
-        grpc_port: u16,
-        /// Port for the HTTP API (default: 3030)
-        #[arg(long = "httpport", default_value = "3030")]
-        http_port: u16,
         /// Data directory path (default: ~/.little)
         #[arg(long = "datadir")]
         data_dir: Option<String>,
+        
+        #[clap(skip)]
+        #[serde(default = "default_lightning_port")]
+        lightning_port: u16,
+        
+        #[clap(skip)]
+        #[serde(default = "default_grpc_port")]
+        grpc_port: u16,
+        
+        #[clap(skip)]
+        #[serde(default = "default_http_port")]
+        http_port: u16,
     },
     Stop,
     GetInfo,
@@ -139,5 +143,18 @@ pub fn parse_peer_string(s: &str) -> Result<PeerString, String> {
         node_id: parts[0].to_string(),
         address: parts[1].to_string(),
     })
+}
+
+// Default functions for port values
+fn default_lightning_port() -> u16 {
+    9735
+}
+
+fn default_grpc_port() -> u16 {
+    50051
+}
+
+fn default_http_port() -> u16 {
+    3030
 }
 

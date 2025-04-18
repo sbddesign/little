@@ -59,40 +59,50 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     // If this is a start command, start the daemon first
     match cli.command {
-        littled::commands::Command::Start { name, lightning_port, grpc_port, http_port, data_dir } => {
+        littled::commands::Command::Start { name, data_dir, .. } => {
             // Start the daemon
             let mut daemon = ProcessCommand::new("littled");
             daemon.arg("start");
             
             // Use the CLI's data_dir if provided, otherwise use the one from the command
-            let data_dir = cli.data_dir.as_ref().or(data_dir.as_ref());
-            if let Some(dir) = data_dir {
+            let data_dir_path = cli.data_dir.as_ref().or(data_dir.as_ref());
+            if let Some(dir) = data_dir_path {
                 daemon.arg("--datadir").arg(dir);
             }
-            daemon.arg("--lightningport").arg(lightning_port.to_string());
-            daemon.arg("--grpcport").arg(grpc_port.to_string());
-            daemon.arg("--httpport").arg(http_port.to_string());
+            
+            if let Some(node_name) = &name {
+                daemon.arg("--name").arg(node_name);
+            }
             
             let mut child = daemon.spawn()?;
             println!("Starting littled daemon...");
             std::thread::sleep(std::time::Duration::from_secs(2));
             
-            // Connect to the daemon
-            let channel = tonic::transport::Channel::from_shared(format!("http://[::1]:{}", grpc_port))
+            // Load config to get ports
+            let data_dir = if let Some(dir) = data_dir_path {
+                PathBuf::from(shellexpand::tilde(dir).into_owned())
+            } else {
+                get_default_data_dir()
+            };
+            
+            let config = load_config(&data_dir)?;
+            
+            // Connect to the daemon using the port from the config file
+            let channel = tonic::transport::Channel::from_shared(format!("http://[::1]:{}", config.grpc_port))
                 .map_err(|e| CliError::Connection(e.to_string()))?
                 .connect()
                 .await?;
             
             let mut client = LittleServiceClient::new(channel);
             
-            // Send the start command
+            // Send the start command with default values for the ports (they will be loaded from config)
             let request = tonic::Request::new(CommandRequest {
                 command: serde_json::to_string(&Command::Start { 
                     name, 
-                    lightning_port, 
-                    grpc_port, 
-                    http_port,
                     data_dir: None, // Don't need to pass data_dir here since it's already set in the daemon
+                    lightning_port: config.lightning_port,
+                    grpc_port: config.grpc_port,
+                    http_port: config.http_port,
                 })?,
                 arguments: std::collections::HashMap::new(),
             });

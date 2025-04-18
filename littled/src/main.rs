@@ -125,12 +125,17 @@ impl MyLittleService {
 
     async fn execute_unified_command(&self, command: Command) -> Result<serde_json::Value, String> {
         match command {
-            Command::Start { name, lightning_port, grpc_port, http_port, data_dir: _ } => Ok(serde_json::json!({
-                "name": name,
-                "lightning_port": lightning_port,
-                "grpc_port": grpc_port,
-                "http_port": http_port,
-            })),
+            Command::Start { name, data_dir: _, .. } => {
+                // Get port values from the config
+                let config = load_config(&self.data_dir)?;
+                
+                Ok(serde_json::json!({
+                    "name": name,
+                    "lightning_port": config.lightning_port,
+                    "grpc_port": config.grpc_port,
+                    "http_port": config.http_port,
+                }))
+            },
             Command::Stop => {
                 if let Some(node) = self.node.lock().await.take() {
                     if let Err(e) = node.stop() {
@@ -447,20 +452,25 @@ async fn handle_http_command(
     let command_str = command["command"].as_str().unwrap_or("").to_lowercase();
     let command = match command_str.as_str() {
         "start" => {
-            let name = command["arguments"].get(0).and_then(|v| v.as_str()).map(|s| s.to_string());
-            let lightning_port = command["arguments"].get("lightning_port")
-                .and_then(|v| v.as_u64())
-                .map(|v| v as u16)
-                .unwrap_or(9735);
-            let grpc_port = command["arguments"].get("grpc_port")
-                .and_then(|v| v.as_u64())
-                .map(|v| v as u16)
-                .unwrap_or(50051);
-            let http_port = command["arguments"].get("http_port")
-                .and_then(|v| v.as_u64())
-                .map(|v| v as u16)
-                .unwrap_or(3030);
-            Command::Start { name, lightning_port, grpc_port, http_port, data_dir: None }
+            // Look for name in both the first argument and as a named parameter
+            let name = command["arguments"].get("name")
+                .and_then(|v| v.as_str())
+                .or_else(|| command["arguments"].get(0).and_then(|v| v.as_str()))
+                .map(|s| s.to_string());
+            
+            // Get data_dir if provided
+            let data_dir = command["arguments"].get("data_dir")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string());
+                
+            // These will be ignored due to serde(skip_deserializing) and values from config will be used
+            Command::Start { 
+                name, 
+                data_dir, 
+                lightning_port: 0, 
+                grpc_port: 0, 
+                http_port: 0 
+            }
         },
         "stop" => Command::Stop,
         "getinfo" => Command::GetInfo,
@@ -547,9 +557,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     // Parse command line arguments
     let mut args = env::args().skip(1);
     let mut data_dir = None;
-    let mut lightning_port = None;
-    let mut grpc_port = None;
-    let mut http_port = None;
+    let mut node_name = None;
 
     while let Some(arg) = args.next() {
         match arg.as_str() {
@@ -558,19 +566,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
                     data_dir = Some(PathBuf::from(shellexpand::tilde(&dir).into_owned()));
                 }
             }
-            "--lightningport" => {
-                if let Some(port) = args.next() {
-                    lightning_port = Some(port.parse::<u16>().unwrap());
-                }
-            }
-            "--grpcport" => {
-                if let Some(port) = args.next() {
-                    grpc_port = Some(port.parse::<u16>().unwrap());
-                }
-            }
-            "--httpport" => {
-                if let Some(port) = args.next() {
-                    http_port = Some(port.parse::<u16>().unwrap());
+            "--name" => {
+                if let Some(name) = args.next() {
+                    node_name = Some(name);
                 }
             }
             _ => {}
@@ -593,13 +591,18 @@ async fn main() -> Result<(), Box<dyn Error>> {
     }
 
     // Load or create config
-    let config = load_config(&data_dir)?;
+    let mut config = load_config(&data_dir)?;
+    
+    // If node_name is provided via CLI, override the config value
+    if let Some(name) = node_name {
+        config.node_alias = name;
+    }
 
     // Create shutdown signal
     let (shutdown_sender, _) = tokio::sync::broadcast::channel(1);
     let shutdown_signal = Arc::new(shutdown_sender);
 
-    // Start the node with the correct data directory
+    // Start the node with the correct data directory and config values
     let (node, node_id) = make_node(&config.node_alias, config.lightning_port, &data_dir);
 
     // Create service with the correct data directory
