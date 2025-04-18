@@ -77,7 +77,6 @@ async fn main() -> Result<(), Box<dyn Error>> {
             
             let mut child = daemon.spawn()?;
             println!("Starting littled daemon...");
-            std::thread::sleep(std::time::Duration::from_secs(2));
             
             // Load config to get ports
             let data_dir = if let Some(dir) = data_dir_path {
@@ -89,28 +88,51 @@ async fn main() -> Result<(), Box<dyn Error>> {
             let config = load_config(&data_dir)
                 .map_err(|e| CliError::Command(e))?;
             
-            // Connect to the daemon using the port from the config file
-            let channel = tonic::transport::Channel::from_shared(format!("http://[::1]:{}", config.grpc_port))
-                .map_err(|e| CliError::Connection(e.to_string()))?
-                .connect()
-                .await?;
+            // Wait for daemon to start with retry logic and timeout
+            println!("Waiting for daemon to start...");
+            let start_time = std::time::Instant::now();
+            let timeout = std::time::Duration::from_secs(10);
+            let mut connected = false;
             
-            let mut client = LittleServiceClient::new(channel);
+            while start_time.elapsed() < timeout {
+                match tonic::transport::Channel::from_shared(format!("http://[::1]:{}", config.grpc_port))
+                    .map_err(|e| CliError::Connection(e.to_string()))?
+                    .connect()
+                    .await
+                {
+                    Ok(channel) => {
+                        println!("Successfully connected to daemon");
+                        connected = true;
+                        
+                        // Use the established channel
+                        let mut client = LittleServiceClient::new(channel);
+                        
+                        // Send the start command with default values for the ports (they will be loaded from config)
+                        let request = tonic::Request::new(CommandRequest {
+                            command: serde_json::to_string(&Command::Start { 
+                                name, 
+                                data_dir: None, // Don't need to pass data_dir here since it's already set in the daemon
+                                lightning_port: config.lightning_port,
+                                grpc_port: config.grpc_port,
+                                http_port: config.http_port,
+                            })?,
+                            arguments: std::collections::HashMap::new(),
+                        });
+                        
+                        let response = client.execute_command(request).await?;
+                        println!("Response: {:?}", response.into_inner());
+                        break;
+                    },
+                    Err(_) => {
+                        // Wait a bit before retrying
+                        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                    }
+                }
+            }
             
-            // Send the start command with default values for the ports (they will be loaded from config)
-            let request = tonic::Request::new(CommandRequest {
-                command: serde_json::to_string(&Command::Start { 
-                    name, 
-                    data_dir: None, // Don't need to pass data_dir here since it's already set in the daemon
-                    lightning_port: config.lightning_port,
-                    grpc_port: config.grpc_port,
-                    http_port: config.http_port,
-                })?,
-                arguments: std::collections::HashMap::new(),
-            });
-            
-            let response = client.execute_command(request).await?;
-            println!("Response: {:?}", response.into_inner());
+            if !connected {
+                return Err(CliError::Connection("Timed out waiting for daemon to start".to_string()).into());
+            }
             
             // Wait for the daemon to exit
             child.wait()?;

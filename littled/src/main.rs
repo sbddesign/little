@@ -291,13 +291,23 @@ impl MyLittleService {
                         match node.connect(peer_pubkey, peer_addr.clone(), true) {
                             Ok(_) => {
                                 println!("Successfully connected to peer");
-                                // Give it a moment to establish the connection
-                                std::thread::sleep(std::time::Duration::from_secs(2));
+                                // Use polling to check for peer connection with a timeout
+                                let mut connected = false;
+                                let start_time = std::time::Instant::now();
+                                let timeout_duration = std::time::Duration::from_secs(10); // 10 second timeout
                                 
-                                // Verify the connection was successful
-                                let peers = node.list_peers();
-                                if !peers.iter().any(|p| p.node_id == peer_pubkey) {
-                                    return Err("Failed to establish connection with peer".to_string());
+                                while start_time.elapsed() < timeout_duration {
+                                    let peers = node.list_peers();
+                                    if peers.iter().any(|p| p.node_id == peer_pubkey) {
+                                        connected = true;
+                                        break;
+                                    }
+                                    // Yield the thread and wait a bit before checking again
+                                    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                                }
+                                
+                                if !connected {
+                                    return Err("Timed out waiting for peer connection to establish".to_string());
                                 }
                             },
                             Err(e) => {
@@ -665,6 +675,31 @@ async fn main() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
+async fn make_node_async(alias: &str, port: u16, data_dir: &Path) -> (ldk_node::Node, String) {
+    let mut builder = Builder::new();
+    builder.set_network(Network::Signet);
+    builder.set_chain_source_esplora("https://mutinynet.ltbl.io/api".to_string(), None);
+    builder.set_gossip_source_rgs("https://mutinynet.ltbl.io/snapshot".to_string());
+    builder.set_storage_dir_path(data_dir.to_string_lossy().to_string());
+    
+    // Configure listening address
+    let listening_address = format!("0.0.0.0:{}", port).parse().unwrap();
+    builder.set_listening_addresses(vec![listening_address]);
+
+    // Configure alias
+    builder.set_node_alias(alias.to_string());
+    
+    let node = builder.build().unwrap();
+    node.start().unwrap();
+
+    // Wait a moment for the node to initialize using async sleep
+    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+
+    let node_id = node.node_id().to_string();
+    
+    (node, node_id)
+}
+
 fn make_node(alias: &str, port: u16, data_dir: &Path) -> (ldk_node::Node, String) {
     let mut builder = Builder::new();
     builder.set_network(Network::Signet);
@@ -682,8 +717,9 @@ fn make_node(alias: &str, port: u16, data_dir: &Path) -> (ldk_node::Node, String
     let node = builder.build().unwrap();
     node.start().unwrap();
 
-    // Wait a moment for the node to initialize
-    std::thread::sleep(std::time::Duration::from_secs(1));
+    // Since this is a synchronous function, we still need to wait for initialization
+    // but we can at least use a shorter sleep time
+    std::thread::sleep(std::time::Duration::from_millis(500));
 
     let node_id = node.node_id().to_string();
     println!("Node started successfully:");
