@@ -81,6 +81,27 @@ pub enum Command {
         #[arg(long)]
         payer_note: Option<String>,
     },
+    /// Generate a BOLT 11 invoice
+    GetInvoice {
+        /// Amount in satoshis (optional - if not provided, creates a variable-amount invoice)
+        #[arg(long)]
+        amount_sat: Option<u64>,
+        /// Expiry time in seconds (default: 86400 - 24 hours)
+        #[arg(long, default_value = "86400")]
+        expiry: u32,
+        /// Description for the invoice
+        #[arg(long, default_value = "Payment to Little Lightning Node")]
+        description: String,
+    },
+    /// Pay a BOLT 11 invoice
+    PayInvoice {
+        /// The BOLT 11 invoice string to pay
+        #[arg(long)]
+        invoice: String,
+        /// Amount in satoshis (required for zero-amount invoices)
+        #[arg(long)]
+        amount_sat: Option<u64>,
+    },
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -151,6 +172,14 @@ pub struct PaymentResponse {
     pub payment_id: String,
     pub amount_msat: u64,
     pub status: String,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct InvoiceResponse {
+    pub invoice_string: String,
+    pub amount_sat: Option<u64>,
+    pub expiry_seconds: u32,
+    pub description: String,
 }
 
 pub fn parse_peer_string(s: &str) -> Result<PeerString, String> {
