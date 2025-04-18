@@ -412,12 +412,17 @@ impl MyLittleService {
                     
                     println!("Paying offer: {}", offer);
                     
+                    // In the current LDK Node API version (0.4.3), the payer_note can't be included
+                    // in the payment directly. We'll log it for reference.
+                    if let Some(note) = &payer_note {
+                        println!("Payer note for reference (not sent with payment): {}", note);
+                    }
+                    
                     // Handle both fixed and variable amount offers
                     let result = match offer.amount() {
                         Some(_) => {
                             // Fixed amount offer
                             let bolt12_payment = node.bolt12_payment();
-                            // send(offer, max_abs_routing_fee_msat, payment_timeout_secs)
                             bolt12_payment.send(
                                 &offer,
                                 None, // max_abs_routing_fee_msat (default)
@@ -444,7 +449,6 @@ impl MyLittleService {
                             // Convert to msats
                             let amount_msat = amount * 1000;
                             let bolt12_payment = node.bolt12_payment();
-                            // send_using_amount(offer, amount_msat, max_abs_routing_fee_msat, payment_timeout_secs)
                             bolt12_payment.send_using_amount(
                                 &offer,
                                 amount_msat,
@@ -460,7 +464,7 @@ impl MyLittleService {
                             
                             // Get payment information
                             let payments = node.list_payments_with_filter(|p| p.id == payment_id);
-                            let payment_info = if !payments.is_empty() {
+                            let mut payment_info = if !payments.is_empty() {
                                 let payment = &payments[0];
                                 serde_json::json!({
                                     "payment_id": hex::encode(payment_id.0),
@@ -474,6 +478,11 @@ impl MyLittleService {
                                     "status": "pending"
                                 })
                             };
+                            
+                            // Include the payer note in our response (even though it's not sent with the payment)
+                            if let Some(note) = payer_note {
+                                payment_info["payer_note"] = serde_json::Value::String(note);
+                            }
                             
                             Ok(payment_info)
                         },
