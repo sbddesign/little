@@ -14,6 +14,7 @@ use ldk_node::Builder;
 use ldk_node::bitcoin::Network;
 use ldk_node::bitcoin::secp256k1::PublicKey;
 use ldk_node::lightning::ln::msgs::SocketAddress;
+use ldk_node::lightning_invoice::Bolt11Invoice;
 use std::str::FromStr;
 use std::path::PathBuf;
 use std::fs::{File, OpenOptions};
@@ -549,6 +550,85 @@ impl MyLittleService {
                     Err("Node is not running".to_string())
                 }
             },
+            Command::PayInvoice { invoice, amount_sat } => {
+                let node_lock = self.node.lock().await;
+                if let Some(node) = node_lock.as_ref() {
+                    // Parse the invoice string
+                    let bolt11_invoice = match Bolt11Invoice::from_str(&invoice) {
+                        Ok(i) => i,
+                        Err(e) => return Err(format!("Invalid invoice string: {:?}", e))
+                    };
+                    
+                    println!("Paying invoice: {}", bolt11_invoice);
+                    
+                    // Check if the invoice has an amount
+                    let has_amount = bolt11_invoice.amount_milli_satoshis().is_some();
+                    
+                    // If the invoice doesn't have an amount, we need the amount_sat parameter
+                    let result = if has_amount {
+                        // Invoice has an amount, use the standard send method
+                        let bolt11_payment = node.bolt11_payment();
+                        bolt11_payment.send(
+                            &bolt11_invoice,
+                            None, // sending_parameters
+                        )
+                    } else {
+                        // Zero-amount invoice, so we need the amount_sat parameter
+                        match amount_sat {
+                            Some(amount) => {
+                                if amount == 0 {
+                                    return Err("Amount must be greater than zero for zero-amount invoices".to_string());
+                                }
+                                
+                                // Convert to millisatoshis
+                                let amount_msat = amount * 1000;
+                                
+                                // Use send_using_amount for zero-amount invoices
+                                let bolt11_payment = node.bolt11_payment();
+                                bolt11_payment.send_using_amount(
+                                    &bolt11_invoice,
+                                    amount_msat,
+                                    None, // sending_parameters
+                                )
+                            },
+                            None => {
+                                return Err("Amount is required for zero-amount invoices. Please specify an amount with --amountsat".to_string());
+                            }
+                        }
+                    };
+                    
+                    match result {
+                        Ok(payment_id) => {
+                            println!("Payment initiated! Payment ID: {:?}", payment_id.0);
+                            
+                            // Get payment information
+                            let payments = node.list_payments_with_filter(|p| p.id == payment_id);
+                            let payment_info = if !payments.is_empty() {
+                                let payment = &payments[0];
+                                serde_json::json!({
+                                    "payment_id": hex::encode(payment_id.0),
+                                    "amount_msat": payment.amount_msat,
+                                    "status": format!("{:?}", payment.status)
+                                })
+                            } else {
+                                // Fallback if payment info is not immediately available
+                                serde_json::json!({
+                                    "payment_id": hex::encode(payment_id.0),
+                                    "status": "pending"
+                                })
+                            };
+                            
+                            Ok(payment_info)
+                        },
+                        Err(e) => {
+                            println!("Payment failed: {}", e);
+                            Err(format!("Failed to pay invoice: {}", e))
+                        }
+                    }
+                } else {
+                    Err("Node is not running".to_string())
+                }
+            },
         }
     }
 }
@@ -713,6 +793,17 @@ async fn handle_http_command(
                 .unwrap_or_else(|| "Payment to Little Lightning Node".to_string());
                 
             Command::GetInvoice { amount_sat, expiry, description }
+        },
+        "payinvoice" => {
+            let invoice = command["arguments"].get("invoice")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| warp::reject::custom(InvalidCommand("Missing invoice parameter".to_string())))?
+                .to_string();
+                
+            let amount_sat = command["arguments"].get("amount_sat")
+                .and_then(|v| v.as_u64());
+                
+            Command::PayInvoice { invoice, amount_sat }
         },
         _ => return Err(warp::reject::custom(InvalidCommand(format!("Unknown command: {}", command_str))))
     };

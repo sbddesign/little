@@ -93,6 +93,15 @@ pub enum Command {
         #[arg(long, default_value = "Payment to Little Lightning Node")]
         description: String,
     },
+    /// Pay a BOLT 11 invoice
+    PayInvoice {
+        /// The BOLT 11 invoice string to pay
+        #[arg(long)]
+        invoice: String,
+        /// Amount in satoshis (required for zero-amount invoices)
+        #[arg(long)]
+        amount_sat: Option<u64>,
+    },
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
