@@ -55,7 +55,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
     };
 
     // Load config to get ports
-    let config = load_config(&data_dir)?;
+    let config = load_config(&data_dir)
+        .map_err(|e| CliError::Command(e))?;
 
     // If this is a start command, start the daemon first
     match cli.command {
@@ -85,7 +86,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 get_default_data_dir()
             };
             
-            let config = load_config(&data_dir)?;
+            let config = load_config(&data_dir)
+                .map_err(|e| CliError::Command(e))?;
             
             // Connect to the daemon using the port from the config file
             let channel = tonic::transport::Channel::from_shared(format!("http://[::1]:{}", config.grpc_port))
