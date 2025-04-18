@@ -26,3 +26,5 @@ Run `curl -X POST -H "Content-Type: application/json" -d '{"command": "getinfo",
 - [x] `payoffer`
 - [x] `payinvoice`
 - [x] `getinvoice`
+- [ ] `listpayments`
+- [ ] Automatically get liquidity from LSP
