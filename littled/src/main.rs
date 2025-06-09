@@ -953,9 +953,14 @@ async fn main() -> Result<(), Box<dyn Error>> {
     // Start gRPC server
     let grpc_addr = format!("[::1]:{}", config.grpc_port).parse()?;
     let grpc_service = LittleServiceServer::new(service.clone());
+    let grpc_shutdown_signal = shutdown_signal.clone();
     let grpc_server = Server::builder()
         .add_service(grpc_service)
-        .serve(grpc_addr);
+        .serve_with_shutdown(grpc_addr, async move {
+            let mut shutdown_receiver = grpc_shutdown_signal.subscribe();
+            shutdown_receiver.recv().await.ok();
+            println!("Shutting down gRPC server...");
+        });
 
     println!("gRPC server listening on {}", grpc_addr);
 
